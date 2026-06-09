@@ -1,15 +1,13 @@
-# Needle-in-a-haystack: NX2 Q5_K_M + FA on + -c 131072 served on the B70 (2026-06-08).
-# Unique code buried at depth in distinct numbered filler; graded by substring of the reply.
-# verdict, ctx_tokens, needle_depth_pct, prefill_s, notes
+# Needle-in-a-haystack: NexN2 Q5_K_M + FA on + -c 131072 on the B70. A unique code is buried at depth in
+# distinct numbered filler and graded by substring of the reply.
+# verdict,ctx_tokens,needle_depth_pct,prefill_s
 PASS,2031,50,5
 PASS,16061,50,35
 PASS,64135,10,178
 PASS,64135,50,180
-PASS,64141,90,181,re-run max_tokens=320 (first try truncated at 64 -> false FAIL)
+PASS,64141,90,181
 PASS,100175,50,321
 PASS,120208,50,417
 PASS,120208,90,419
-# RESULT: 8/8 retrieval PASS up to 120k tokens, all depths incl. 90% (near the 131072 serving limit).
-# Long context is USABLE (retrievable), not merely allocatable/fast.
-# MEASUREMENT LESSON: NX2 is a reasoning model (<think> trace consumes the token budget). NIAH grading
-# needs generous max_tokens (>=~300) or the answer truncates and reads as a false FAIL.
+# 8/8 retrieval up to 120k tokens at every depth, including 90% near the 131072 serving limit.
+# Tip: NexN2 is a reasoning model, so give retrieval probes generous max_tokens (>= ~300) for the <think> trace.

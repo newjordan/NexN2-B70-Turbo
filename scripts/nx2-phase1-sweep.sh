@@ -3,7 +3,7 @@
 # nx2-phase1-sweep.sh
 #
 # Phase-1 accuracy+speed sweep of Nex-N2-mini quantizations on an Intel Arc B70
-# (llama.cpp SYCL build).  No shims: every quant is produced from the bf16
+# (llama.cpp SYCL build).  Every quant is produced from the bf16
 # source with the imatrix, then measured for KLD/PPL/top-1 agreement (accuracy)
 # and pp512/tg128 throughput (speed).
 #

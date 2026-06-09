@@ -26,7 +26,7 @@ tags:
 
 GGUF + importance-matrix quantizations of **[nex-agi/Nex-N2-mini](https://huggingface.co/nex-agi/Nex-N2-mini)** (Qwen3.5-35B-A3B MoE, ~3B active, multimodal reasoning), tuned and measured for fast **local** inference on the **Intel Arc Pro B70** (Battlemage) via llama.cpp's SYCL backend.
 
-> ⚠️ **Unofficial community quantization.** Not affiliated with, endorsed by, or sponsored by Nex-AGI, the Qwen Team / Alibaba, or Intel. The base model is **© Nex-AGI** (Apache-2.0), post-trained on **Qwen3.5-35B-A3B-Base © Qwen Team** (Apache-2.0). These quants are redistributed under Apache-2.0.
+An independent community quantization. The base model is **© Nex-AGI** (Apache-2.0), post-trained on **Qwen3.5-35B-A3B-Base © Qwen Team** (Apache-2.0); these quants are redistributed under Apache-2.0 and the names identify the upstream work.
 
 Code, kernel patch, full methodology, and reproducible benchmarks: **https://github.com/newjordan/NexN2-B70-Turbo**
 
@@ -43,7 +43,7 @@ Code, kernel patch, full methodology, and reproducible benchmarks: **https://git
 | `Nex-N2-mini-B70-Turbo-Q3_K_S.gguf` | Q3_K_S | 14.1 GB | 3.50 | 0.1479 | 83.9% | 52.2 |
 | `mmproj-f16.gguf` | vision projector | 0.8 GB | — | — | — | — |
 
-**Recommendation: `Q5_K_M`** (best accuracy under the Q6_K reference, near-fastest) or **`Q4_K_M`** for max speed / more context headroom. On SYCL, smaller is *not* faster — IQ4_XS/Q3_K use unoptimized kernels; Q4_K/Q5_K win. Accuracy is KL-divergence + top-1 agreement vs a Q6_K reference (PPL 6.572, wikitext-2, 100 chunks). For vision, add `mmproj-f16.gguf`.
+**Recommendation: `Q5_K_M`** (best accuracy under the Q6_K reference, near-fastest) or **`Q4_K_M`** for max speed / more context headroom. On SYCL, Q4_K / Q5_K carry the optimized kernels and lead the decode column — they're the speed picks. Accuracy is KL-divergence + top-1 agreement vs a Q6_K reference (PPL 6.572, wikitext-2, 100 chunks). For vision, add `mmproj-f16.gguf`.
 
 ## Benchmarks (Intel Arc Pro B70, real measurements)
 
@@ -54,7 +54,7 @@ With the project's reorder-on-MoE "Turbo" kernel + Flash-Attention:
 | stock llama.cpp SYCL | 55.4 t/s | 20.0 t/s |
 | **NexN2 B70 Turbo** (reorder + FA) | **81.3 t/s** | **41.0 t/s** |
 
-Long context is *usable*, not just allocatable: needle-in-haystack 8/8 up to 120k tokens at every depth. Full tables (reorder × depth, FA × depth, NIAH) and the kernel patch are in the [GitHub repo](https://github.com/newjordan/NexN2-B70-Turbo).
+Long context works end-to-end: needle-in-haystack 8/8 up to 120k tokens at every depth. Full tables (reorder × depth, FA × depth, NIAH) and the kernel patch are in the [GitHub repo](https://github.com/newjordan/NexN2-B70-Turbo).
 
 ## Run it (llama.cpp)
 
@@ -70,11 +70,11 @@ OpenAI-compatible endpoint at `http://127.0.0.1:8090/v1`. **Nex-N2-mini is a rea
 
 - **Base model:** [nex-agi/Nex-N2-mini](https://huggingface.co/nex-agi/Nex-N2-mini) (Apache-2.0), post-trained on [Qwen/Qwen3.5-35B-A3B-Base](https://huggingface.co/Qwen/Qwen3.5-35B-A3B-Base) (Apache-2.0).
 - **Changes from the original:** converted to GGUF; quantized with a llama.cpp importance matrix (imatrix calibrated on Bartowski `calibration_datav3`); set GGUF metadata `qwen35moe.block_count=40` and `qwen35moe.nextn_predict_layers=0` so the model loads in llama.cpp (the MTP/NextN head is speculative-only and absent from the checkpoint — lossless for standard inference).
-- Weights are not otherwise altered beyond quantization.
+- The weights are quantizations of the original; no other modifications.
 
 ## License & attribution
 
-Released under the **Apache License 2.0**, inherited from the base model. You must retain the attribution above. See [`NOTICE`](https://github.com/newjordan/NexN2-B70-Turbo/blob/main/NOTICE) for the full attribution chain (Qwen → Nex-AGI → these quants; plus llama.cpp/MIT).
+Released under the **Apache License 2.0**, inherited from the base model. Retain the attribution above. See [`NOTICE`](https://github.com/newjordan/NexN2-B70-Turbo/blob/main/NOTICE) for the full attribution chain (Qwen → Nex-AGI → these quants; plus llama.cpp / MIT).
 
 ```bibtex
 @misc{qwen3.5,
