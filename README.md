@@ -122,7 +122,7 @@ Hardware: Intel Arc Pro B70 (Battlemage, `8086:e223`), 32 GB GDDR6, ~600 GB/s, U
 Model lineage (all **Apache-2.0**):
 - **[Qwen3.5-35B-A3B-Base](https://huggingface.co/Qwen/Qwen3.5-35B-A3B-Base)** — foundation model, © Qwen Team, Alibaba Cloud.
 - **[Nex-N2-mini](https://huggingface.co/nex-agi/Nex-N2-mini)** — © [Nex-AGI](https://nex-agi.com), post-trained on Qwen3.5-35B-A3B-Base. **The model these GGUFs are built from.**
-- The **GGUF quants** ([HuggingFace](https://huggingface.co/newjordan/Nex-N2-mini-B70-Turbo-GGUF)) are derivative works of Nex-N2-mini, redistributed under Apache-2.0. Changes: GGUF conversion, imatrix quantization, and the `qwen35moe` MTP/NextN metadata set to `block_count=40` / `nextn_predict_layers=0` for llama.cpp loading (lossless for standard inference — see [`docs/methodology.md`](docs/methodology.md)).
+- The **GGUF quants** ([HuggingFace](https://huggingface.co/Frosty40/Nex-N2-mini-B70-Turbo-GGUF)) are derivative works of Nex-N2-mini, redistributed under Apache-2.0. Changes: GGUF conversion, imatrix quantization, and the `qwen35moe` MTP/NextN metadata set to `block_count=40` / `nextn_predict_layers=0` for llama.cpp loading (lossless for standard inference — see [`docs/methodology.md`](docs/methodology.md)).
 
 **Tooling:** [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT) — the engine, and the SYCL backend that `patches/0001` derives from (original copyright retained). **Imatrix calibration:** Bartowski `calibration_datav3`. **Eval:** WikiText-2 (perplexity / KLD only; not redistributed).
 
