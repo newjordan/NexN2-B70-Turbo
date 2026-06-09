@@ -115,6 +115,29 @@ See [`docs/methodology.md`](docs/methodology.md) for the ground-truth setup: bf1
 ---
 Hardware: Intel Arc Pro B70 (Battlemage, `8086:e223`), 32 GB GDDR6, ~600 GB/s, Ubuntu 24.04, oneAPI / SYCL (icpx 2026.0). Built on [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT). The kernel work is local to this project and is not submitted upstream.
 
+## Credits & licenses
+
+**NexN2 B70 Turbo is an unofficial, community project** — not affiliated with or endorsed by Nex-AGI, the Qwen Team / Alibaba, Intel, or the llama.cpp project.
+
+Model lineage (all **Apache-2.0**):
+- **[Qwen3.5-35B-A3B-Base](https://huggingface.co/Qwen/Qwen3.5-35B-A3B-Base)** — foundation model, © Qwen Team, Alibaba Cloud.
+- **[Nex-N2-mini](https://huggingface.co/nex-agi/Nex-N2-mini)** — © [Nex-AGI](https://nex-agi.com), post-trained on Qwen3.5-35B-A3B-Base. **The model these GGUFs are built from.**
+- The **GGUF quants** ([HuggingFace](https://huggingface.co/newjordan/Nex-N2-mini-B70-Turbo-GGUF)) are derivative works of Nex-N2-mini, redistributed under Apache-2.0. Changes: GGUF conversion, imatrix quantization, and the `qwen35moe` MTP/NextN metadata set to `block_count=40` / `nextn_predict_layers=0` for llama.cpp loading (lossless for standard inference — see [`docs/methodology.md`](docs/methodology.md)).
+
+**Tooling:** [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT) — the engine, and the SYCL backend that `patches/0001` derives from (original copyright retained). **Imatrix calibration:** Bartowski `calibration_datav3`. **Eval:** WikiText-2 (perplexity / KLD only; not redistributed).
+
+This repository's own code and docs are **MIT** ([LICENSE](LICENSE)); the full attribution chain and change notice are in [NOTICE](NOTICE). If you use this, please cite the upstream work:
+
+```bibtex
+@misc{qwen3.5,
+  title  = {{Qwen3.5}: Towards Native Multimodal Agents},
+  author = {{Qwen Team}},
+  month  = {February},
+  year   = {2026},
+  url    = {https://qwen.ai/blog?id=qwen3.5}
+}
+```
+
 ```text
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⣀⠤⠚⠓⠤⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀
 ⠀⠀⠀⠀⠀⠀⠀⠀⡾⣅⠀⠀⠀⠀⣨⢷⠀⠀⠀⠀⠀⠀⠀⠀

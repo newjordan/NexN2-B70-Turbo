@@ -1,0 +1,82 @@
+NexN2 B70 Turbo — NOTICE & Attributions
+=======================================
+
+NexN2 B70 Turbo packages, quantizes, optimizes, and serves the Nex-N2-mini
+language model on the Intel Arc Pro B70. It is an UNOFFICIAL, community project
+and is NOT affiliated with, endorsed by, or sponsored by Nex-AGI, the Qwen Team
+or Alibaba, Intel Corporation, or the llama.cpp / ggml project.
+
+----------------------------------------------------------------------
+Model lineage and licenses (Apache License 2.0 throughout)
+----------------------------------------------------------------------
+
+1. Qwen3.5-35B-A3B-Base — foundation model
+   Copyright (c) Qwen Team, Alibaba Cloud.
+   Licensed under the Apache License, Version 2.0.
+   https://huggingface.co/Qwen/Qwen3.5-35B-A3B-Base
+   Nex-N2-mini is post-trained on this base model.
+
+2. Nex-N2-mini — base model for these quants
+   Copyright (c) Nex-AGI.
+   Licensed under the Apache License, Version 2.0.
+   https://huggingface.co/nex-agi/Nex-N2-mini  |  https://nex-agi.com
+   Post-trained on Qwen3.5-35B-A3B-Base.
+
+3. Nex-N2-mini-B70-Turbo-GGUF — quantized derivatives (this project's weights)
+   Derivative work of Nex-N2-mini, redistributed under the Apache License,
+   Version 2.0 (attribution above preserved per Section 4(c/d)).
+   Changes made to the original work (per Apache-2.0 Section 4(b)):
+     - Converted from the original safetensors to the GGUF format.
+     - Quantized to Q3_K_S / Q3_K_M / Q4_K_M / Q5_K_M / IQ4_XS and dynamic
+       mixes using a llama.cpp importance matrix (imatrix).
+     - The GGUF metadata `qwen35moe.block_count` and
+       `qwen35moe.nextn_predict_layers` were set to 40 and 0 respectively so the
+       model loads in llama.cpp. The MTP/NextN head is speculative-only and is
+       absent from the published checkpoint; this is lossless for standard
+       inference (see docs/methodology.md).
+   The model weights are not otherwise altered beyond quantization.
+
+----------------------------------------------------------------------
+Software, tooling, and data
+----------------------------------------------------------------------
+
+4. llama.cpp / ggml
+   Copyright (c) 2023-2026 The ggml authors and the llama.cpp contributors.
+   Licensed under the MIT License.  https://github.com/ggml-org/llama.cpp
+   The reorder-on-MoE kernel in patches/0001-*.patch is a derivative work of
+   llama.cpp's SYCL backend. The original MIT copyright and permission notice
+   are retained in the modified source files. Modifications by this project are
+   licensed under the MIT License (see LICENSE).
+
+5. Importance-matrix calibration: "calibration_datav3" by Bartowski, used to
+   compute the imatrix that guides quantization. The imatrix is aggregate
+   per-tensor statistics derived from the calibration text, not the text itself.
+
+6. Evaluation: WikiText-2 (Merity et al., 2016; CC BY-SA 3.0) was used only to
+   compute perplexity and KL-divergence. It is not redistributed in this project.
+
+----------------------------------------------------------------------
+Trademarks
+----------------------------------------------------------------------
+"Nex-AGI" and "Nex-N2" are trademarks of Nex-AGI. "Qwen" is a trademark of
+Alibaba. "Intel", "Arc", and "Battlemage" are trademarks of Intel Corporation.
+All other trademarks are the property of their respective owners. These names
+are used nominatively, to identify the upstream model and the target hardware;
+no affiliation or endorsement is implied.
+
+----------------------------------------------------------------------
+Citation
+----------------------------------------------------------------------
+@misc{qwen3.5,
+    title  = {{Qwen3.5}: Towards Native Multimodal Agents},
+    author = {{Qwen Team}},
+    month  = {February},
+    year   = {2026},
+    url    = {https://qwen.ai/blog?id=qwen3.5}
+}
+
+Please also credit Nex-AGI's Nex-N2-mini (https://github.com/nex-agi/Nex-N2) as
+the base model these quantizations are built from.
+
+This project's own original code and documentation are licensed under the MIT
+License; see the LICENSE file.
