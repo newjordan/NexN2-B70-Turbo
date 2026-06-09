@@ -1,0 +1,32 @@
+# NX2 Q5_K_M (reorder ON), Intel Arc B70, llama-bench -p 0 -n <32|64> -r <1|2>. Decode t/s by depth.
+# FA on vs off (f16 KV), plus q8_0 KV (rejected). 2026-06-08.
+model,quant,kv,fa,depth,tg_tok_s
+NX2,Q5_K_M,f16,off,0,82.71
+NX2,Q5_K_M,f16,off,32768,50.97
+NX2,Q5_K_M,f16,off,131072,21.07
+NX2,Q5_K_M,f16,on,0,81.26
+NX2,Q5_K_M,f16,on,32768,64.57
+NX2,Q5_K_M,f16,on,131072,40.95
+NX2,Q5_K_M,f16,on,262144,26.80
+NX2,Q5_K_M,q8_0,on,131072,8.70
+# Notes:
+# - FA gain at depth: +26.7% @32k, +94.3% @131k; -1.8% @ctx0 (FA overhead with no context).
+# - 262144 (full trained ctx) FITS on f16 KV (23.02 GiB weights + ~5 GiB KV, no OOM), decodes 26.8 t/s.
+# - q8_0 KV is 4.7x SLOWER than f16 at 131k (8.70 vs 40.95) -> REJECTED (SYCL FA+quant-KV path unoptimized).
+# - Prefill wall: cold-prefilling 262144 tokens took ~19 min (O(n^2) attention). The practical ceiling is
+#   PREFILL compute, not VRAM (KV is tiny on this hybrid 10/40-attn model) nor the 262k training limit.
+# - Prefix cache (loop agent): turn-2 reused 1303 cached prefix tokens, re-prefilled only 523 (delta),
+#   prompt_ms 3027 -> 878. Each agent turn pays only its delta-prefill, not full-context.
+#
+# REORDER x FA 2x2 (Q5_K_M, same build, decode t/s) - what each lever contributes:
+# config,                         ctx0,  131k
+# stock (reorder off / FA off),   55.43, 19.99
+# FA only (reorder off / FA on),  57.56, 37.32
+# Turbo only (reorder on / FA off),82.71, 21.07
+# Turbo+FA (deployed),            81.26, 40.95
+# => Reorder ("Turbo"): +49% @ctx0, only +5-10% @131k (per-token MoE-GEMV speedup, diluted by attention).
+#    FA: ~flat @ctx0, +87-94% @131k. Complementary - reorder owns short ctx, FA owns deep ctx.
+#    Deployed (Turbo+FA) vs stock: +47% @ctx0, +105% (2.05x) @131k.
+# CAVEAT: GGML_SYCL_DISABLE_OPT=1 disables the FULL reorder stack (upstream dense + our MoE reorder), so the
+#    +49% is the whole stack. Our Phase 2 MoE-reorder slice was the +18% increment on top of dense reorder
+#    (Phase 2 reorder-off baseline was ~70 vs ~55 here). Dense-vs-MoE split inferred, not re-measured here.

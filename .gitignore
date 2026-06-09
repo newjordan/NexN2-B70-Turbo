@@ -1,0 +1,17 @@
+# Never commit model weights or large binaries
+*.gguf
+*.safetensors
+*.imatrix
+*.kld
+*.bin
+*.dat
+*.so
+*.so.*
+
+# Logs / scratch
+*.log
+*.out
+*.err
+
+# OS
+.DS_Store
