@@ -1,4 +1,5 @@
-<img width="1254" height="1254" alt="nx2_b70_turbo_x" src="https://github.com/user-attachments/assets/81cead7d-945d-42a9-8284-3776e8c88bb4" />
+<img width="1254" height="1254" alt="nx2_b70_turbo_x" src="https://github.com/user-attachments/assets/8c976d71-82e7-4a3c-bcc7-e26a1f774cdf" />
+
 
 
 # NX2 B70 Turbo
