@@ -8,7 +8,6 @@
 
 NexN2 is a **Qwen3.5-35B-A3B Mixture-of-Experts** reasoning model (35B total / ~3B active per token, 256 experts / 8 active, multimodal). **"Turbo"** is a custom SYCL kernel — *reorder-on-MoE* — that lifts the entire decode frontier at **zero accuracy cost**, paired with a tuned long-context serving profile.
 
-> **Rule of the house: touch the real thing only.** Every number here is a real measurement from a real command on the real model and the real GPU — real KL-divergence vs a Q6_K reference, real wall-clock t/s on the card. No proxy metrics, no requantize-from-Q4 shortcuts, no estimates presented as results.
 
 ## Headline
 
