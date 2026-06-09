@@ -2,11 +2,11 @@
 
 
 
-# NX2 B70 Turbo
+# NexN2 B70 Turbo
 
 **The fastest + most accurate _local_ deployment of [Nex-N2-mini](https://huggingface.co/nex-agi/Nex-N2-mini) on the Intel Arc Pro B70 (Battlemage)** — measured on the real model, on the real card, with no shims.
 
-NX2 is a **Qwen3.5-35B-A3B Mixture-of-Experts** reasoning model (35B total / ~3B active per token, 256 experts / 8 active, multimodal). **"Turbo"** is a custom SYCL kernel — *reorder-on-MoE* — that lifts the entire decode frontier at **zero accuracy cost**, paired with a tuned long-context serving profile.
+NexN2 is a **Qwen3.5-35B-A3B Mixture-of-Experts** reasoning model (35B total / ~3B active per token, 256 experts / 8 active, multimodal). **"Turbo"** is a custom SYCL kernel — *reorder-on-MoE* — that lifts the entire decode frontier at **zero accuracy cost**, paired with a tuned long-context serving profile.
 
 > **Rule of the house: touch the real thing only.** Every number here is a real measurement from a real command on the real model and the real GPU — real KL-divergence vs a Q6_K reference, real wall-clock t/s on the card. No proxy metrics, no requantize-from-Q4 shortcuts, no estimates presented as results.
 
@@ -15,7 +15,7 @@ NX2 is a **Qwen3.5-35B-A3B Mixture-of-Experts** reasoning model (35B total / ~3B
 | config | decode @ ctx0 | decode @ 131k |
 |---|---:|---:|
 | stock llama.cpp SYCL | 55.4 t/s | 20.0 t/s |
-| **NX2 B70 Turbo** (reorder + Flash-Attention) | **81.3 t/s** | **41.0 t/s** |
+| **NexN2 B70 Turbo** (reorder + Flash-Attention) | **81.3 t/s** | **41.0 t/s** |
 | | **+47%** | **+105% (2.05×)** |
 
 - **Turbo kernel (reorder-on-MoE):** +17–18% decode at short context (Q5_K_M 70.1 → 82.8 t/s; Q4_K_M 74.5 → 87.5 t/s) — token-identical greedy output, **zero accuracy cost**.
@@ -45,7 +45,7 @@ The frontier is two points; everything else is dominated. **Q5_K_M** is the all-
 
 ## Turbo: reorder-on-MoE
 
-NX2's decode bottleneck is the fused MoE expert GEMV (`mul_mat_id`). Upstream llama.cpp has a SYCL "reorder" (Structure-of-Arrays weight layout) that the *dense* path uses, but the per-expert MoE path bails out of it. **Turbo extends reorder to the MoE expert GEMV** for Q4_K and Q5_K across every decode/prefill sub-path (decode GEMV, dense mmvq, DMMV, and the dequant-to-fp16/fp32 GEMM path), adding a Q5_K reorder DMMV kernel and per-expert reorder converters. Code: [`patches/0001`](patches/).
+NexN2's decode bottleneck is the fused MoE expert GEMV (`mul_mat_id`). Upstream llama.cpp has a SYCL "reorder" (Structure-of-Arrays weight layout) that the *dense* path uses, but the per-expert MoE path bails out of it. **Turbo extends reorder to the MoE expert GEMV** for Q4_K and Q5_K across every decode/prefill sub-path (decode GEMV, dense mmvq, DMMV, and the dequant-to-fp16/fp32 GEMM path), adding a Q5_K reorder DMMV kernel and per-expert reorder converters. Code: [`patches/0001`](patches/).
 
 Clean A/B (`llama-bench`, reorder OFF = `GGML_SYCL_DISABLE_OPT=1` vs default ON) — [`results/longctx-reorder.csv`](results/longctx-reorder.csv):
 
@@ -60,7 +60,7 @@ Gain decays with depth (the kernel speeds only the MoE GEMV; attention cost grow
 
 ## Long context: Flash-Attention + a tiny KV
 
-NX2 is a **hybrid** model — only 10 of 40 layers are full attention (`full_attention_interval=4`); the rest are Gated Delta Net (linear). So KV grows at just **20 KiB/token**, and even the full 262144 context is ~5 GiB. Weights dominate VRAM, not KV.
+NexN2 is a **hybrid** model — only 10 of 40 layers are full attention (`full_attention_interval=4`); the rest are Gated Delta Net (linear). So KV grows at just **20 KiB/token**, and even the full 262144 context is ~5 GiB. Weights dominate VRAM, not KV.
 
 FA decode by depth (Q5_K_M, f16 KV, reorder on) — [`results/longctx-fa.csv`](results/longctx-fa.csv):
 
@@ -85,7 +85,7 @@ Point any OpenAI client at `http://127.0.0.1:8090/v1`:
 - **opencode:** drop [`serving/opencode.json`](serving/opencode.json) into `~/.config/opencode/`.
 - **Hermes Agent:** see [`serving/hermes.md`](serving/hermes.md).
 
-NX2 is a **reasoning model** — it emits a `<think>` trace first, so give it generous `max_tokens`.
+NexN2 is a **reasoning model** — it emits a `<think>` trace first, so give it generous `max_tokens`.
 
 ## Build
 
@@ -103,7 +103,7 @@ cmake --build build -j
 ./scripts/nx2-phase1-sweep.sh   # quantize candidates, measure KLD/PPL + t/s -> results/frontier.csv
 ```
 
-See [`docs/methodology.md`](docs/methodology.md) for the ground-truth setup: bf16 → GGUF convert, the **MTP/NextN metadata fix** (the one bug that blocks loading NX2 at all), the Q6_K reference, and the imatrix.
+See [`docs/methodology.md`](docs/methodology.md) for the ground-truth setup: bf16 → GGUF convert, the **MTP/NextN metadata fix** (the one bug that blocks loading NexN2 at all), the Q6_K reference, and the imatrix.
 
 ## Layout
 - `patches/` — the reorder-on-MoE kernel (the "Turbo")

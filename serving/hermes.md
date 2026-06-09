@@ -1,6 +1,6 @@
-# NX2 B70 Turbo + Hermes Agent
+# NexN2 B70 Turbo + Hermes Agent
 
-[Hermes Agent](https://github.com/nousresearch/hermes-agent) is an OpenAI-compatible autonomous agent. Point it at the local NX2 server.
+[Hermes Agent](https://github.com/nousresearch/hermes-agent) is an OpenAI-compatible autonomous agent. Point it at the local NexN2 server.
 
 ## Install
 
@@ -9,7 +9,7 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 source ~/.bashrc
 ```
 
-## Point it at NX2 (custom provider)
+## Point it at NexN2 (custom provider)
 
 ```bash
 hermes config set model.provider custom
@@ -29,5 +29,5 @@ hermes                                                  # interactive
 
 Notes:
 - `provider: custom` also accepts the aliases `llamacpp` / `vllm` / `ollama`.
-- NX2 is a reasoning model (emits a `<think>` trace); leave `max_tokens` unset to use the native ceiling.
+- NexN2 is a reasoning model (emits a `<think>` trace); leave `max_tokens` unset to use the native ceiling.
 - Make sure `serving/llama-server.sh` is running first (`:8090`).

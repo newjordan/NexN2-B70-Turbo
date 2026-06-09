@@ -4,14 +4,14 @@
   "provider": {
     "b70-local": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "NX2 B70 Turbo (llama-server)",
+      "name": "NexN2 B70 Turbo (llama-server)",
       "options": {
         "baseURL": "http://127.0.0.1:8090/v1",
         "apiKey": "sk-local"
       },
       "models": {
         "nex-n2-mini": {
-          "name": "NX2 B70 Turbo — Nex-N2-mini Q5_K_M",
+          "name": "NexN2 B70 Turbo — Nex-N2-mini Q5_K_M",
           "tools": true,
           "limit": { "context": 32768, "output": 8192 }
         }
