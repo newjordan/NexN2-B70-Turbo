@@ -11,3 +11,5 @@ PASS,120208,50,417
 PASS,120208,90,419
 # 8/8 retrieval up to 120k tokens at every depth, including 90% near the 131072 serving limit.
 # Tip: NexN2 is a reasoning model, so give retrieval probes generous max_tokens (>= ~300) for the <think> trace.
+# 2026-06-09 continuity re-check after applying n_ctx=262144 (same Q5_K_M, FA on, f16 KV, eval/niah/single_needle.py):
+PASS,120378,90,310

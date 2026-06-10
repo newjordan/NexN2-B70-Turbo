@@ -1,0 +1,3 @@
+system,steps,facts,recall,latency_s_per_step,tokens_prefilled,storage_bytes,rooms,compactions,seed
+lean,40,8,0.25,30.0,390128,277461,12,7,7
+letta,40,8,1.0,17.2,2352724,0,,,7

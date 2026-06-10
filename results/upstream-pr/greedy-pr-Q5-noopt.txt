@@ -1,0 +1,4 @@
+
+To prove this, suppose a positive integer n has two prime factorizations:
+
+

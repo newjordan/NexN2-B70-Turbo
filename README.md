@@ -16,7 +16,7 @@ NexN2 is a **Qwen3.5-35B-A3B Mixture-of-Experts** reasoning model (35B total / ~
 | **NexN2 B70 Turbo** (reorder + Flash-Attention) | **81.3 t/s** | **41.0 t/s** |
 | | **+47%** | **+105% (2.05×)** |
 
-- **Turbo kernel (reorder-on-MoE):** +17–18% decode at short context (Q5_K_M 70.1 → 82.8 t/s; Q4_K_M 74.5 → 87.5 t/s) — token-identical greedy output, **zero accuracy cost**.
+- **Turbo kernel (reorder-on-MoE):** correctness-clean vs upstream (716/716 op tests, PPL unchanged), but 2026-06-10 re-validation attributes the +17–18% on/off decode delta almost entirely to upstream's existing dense reorder — the MoE addition itself is ~0–1% end-to-end on NX2 (see [`results/upstream-pr/SUMMARY.md`](results/upstream-pr/SUMMARY.md)).
 - **Flash-Attention:** +94% decode at 131k. Reorder owns short context, FA owns deep context — together they cover the whole window.
 - **Long context works end-to-end:** 8/8 needle-in-haystack retrieval up to 120k tokens at every depth.
 - Serves an **OpenAI-compatible** endpoint — drop-in for [opencode](serving/opencode.json) and [Hermes Agent](serving/hermes.md).
@@ -54,7 +54,9 @@ Clean A/B (`llama-bench`, reorder ON vs OFF) — [`results/longctx-reorder.csv`]
 | 16384 | 55.65 → 62.59 | +12.5% | 58.28 → 65.26 | +12.0% |
 | 32768 | 46.21 → 51.01 | +10.4% | 47.94 → 52.63 | +9.8% |
 
-The reorder win is largest at short context, where the MoE GEMV dominates; Flash-Attention carries the win at depth (next section). **Zero accuracy cost:** greedy decode is token-identical reorder-on vs off, verified against the CPU reference via `test-backend-ops` (MUL_MAT_ID) and a server prefill-after-reorder differential.
+The reorder win is largest at short context; Flash-Attention carries the win at depth (next section). **Zero accuracy cost:** `test-backend-ops` MUL_MAT_ID passes 716/716 vs the CPU reference and perplexity is unchanged (5.5643 vs 5.5662 ±0.15).
+
+> **Attribution correction (2026-06-10 re-validation, [`results/upstream-pr/SUMMARY.md`](results/upstream-pr/SUMMARY.md)):** the on/off A/B above toggles `GGML_SYCL_DISABLE_OPT`, which also disables upstream's pre-existing *dense* reorder — and a full 2×2 against unpatched upstream shows that is where essentially the entire gain lives. The MoE patch itself adds ~0–1% end-to-end decode on NX2 (kernel-level ~+3% on the expert-GEMV shape; NX2 decode is bottlenecked by the CPU-resident Delta-Net layers). Greedy output is token-identical with FA off; with FA on, outputs can diverge after tens of tokens within numeric tolerance.
 
 ## Long context: Flash-Attention + a tiny KV
 
@@ -105,10 +107,12 @@ See [`docs/methodology.md`](docs/methodology.md) for the ground-truth setup: bf1
 
 ## Layout
 - `patches/` — the reorder-on-MoE kernel (the "Turbo")
-- `results/` — measured benchmarks (frontier, reorder × depth, FA × depth, needle-in-haystack)
+- `results/` — measured benchmarks (frontier, reorder × depth, FA × depth, needle-in-haystack, long-context Pareto, memory bakeoff)
 - `serving/` — `llama-server` launcher + opencode / Hermes provider configs
 - `scripts/` — the quant-sweep + measurement scripts
 - `docs/` — methodology, the MTP load setting, hardware notes
+- `eval/` — measurement harnesses: `niah/` (cache-smart multi-needle context sweep + serve/sweep runners), `memory/` (memory-substrate bakeoff), `upstream/` (A/B validation matrix for the Turbo patch vs upstream master)
+- `mempalace/` — rolling research memory substrates: `lean/` (files + FTS5 + local embeddings + MemGPT-style controller) and `letta/` (Letta against local endpoints)
 
 ---
 Hardware: Intel Arc Pro B70 (Battlemage, `8086:e223`), 32 GB GDDR6, ~600 GB/s, Ubuntu 24.04, oneAPI / SYCL (icpx 2026.0). Built on [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT); the reorder-on-MoE kernel was developed and validated locally on the B70.
