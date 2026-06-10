@@ -47,12 +47,15 @@ Code, kernel patch, full methodology, and reproducible benchmarks: **https://git
 
 ## Benchmarks (Intel Arc Pro B70, real measurements)
 
-With the project's reorder-on-MoE "Turbo" kernel + Flash-Attention:
+With the project's Turbo package on Arc Pro B70:
 
 | config | decode @ ctx0 | decode @ 131k |
 |---|---:|---:|
-| stock llama.cpp SYCL | 55.4 t/s | 20.0 t/s |
-| **NexN2 B70 Turbo** (reorder + FA) | **81.3 t/s** | **41.0 t/s** |
+| fresh stock control: reorder off / FA off | 69.8 t/s | 20.1 t/s |
+| **NexN2 B70 Turbo** (reorder + FA) | **81.7 t/s** | **40.9 t/s** |
+
+An older retained CSV records stock ctx0 at 55.4 t/s, but its raw command/log
+was not retained; current reproducible ctx0 stock reruns are around 69.x t/s.
 
 Long context works end-to-end: needle-in-haystack 8/8 up to 120k tokens at every depth. Full tables (reorder × depth, FA × depth, NIAH) and the kernel patch are in the [GitHub repo](https://github.com/newjordan/NexN2-B70-Turbo).
 

@@ -17,13 +17,55 @@ python gguf-py/gguf/scripts/gguf_set_metadata.py NexN2.gguf qwen35moe.nextn_pred
 ## Speed comes from the kernel
 Decode is kernel-limited on this stack: Q4_K_M (4.88 bpw) decodes at 85.7 t/s while the lower-bit IQ4_XS (4.32 bpw) runs at 52.8 — Q4_K / Q5_K carry the optimized, reorder-capable kernels. The lever for more speed is a better kernel (reorder-on-MoE), which is what Turbo delivers.
 
-## Reorder is bit-safe on Battlemage
-Greedy (`--temp 0`) decode of a fixed prompt is **token-identical** with the SYCL reorder optimization on (`GGML_SYCL_DISABLE_OPT=0`) vs off (`=1`) — only the t/s footer differs. The reorder layout is bit-safe for Q4_K / Q5_K decode on this card.
+## Project control data
+The fresh reproducible control comparison is the Q5_K_M rerun in
+`results/nx2-controls/20260610T220943Z/`, measured on the NX2 GGUF artifact and
+Arc Pro B70:
 
-## Reorder-on-MoE: correctness — and a corrected performance attribution
-Turbo extends the dense SYCL reorder to the fused MoE expert GEMV (`mul_mat_id`) for Q4_K and Q5_K. Correctness holds under the full 2026-06-10 validation matrix (`results/upstream-pr/SUMMARY.md`): `test-backend-ops` MUL_MAT_ID 716/716 vs CPU reference, PPL statistically identical (5.5643 vs 5.5662 ±0.152), and greedy decode **token-identical with FA off**. With FA **on**, greedy outputs can diverge after ~tens of tokens (ulp-level summation-order differences amplified by argmax; both outputs coherent, within op tolerance) — the earlier "byte-identical" wording was an overclaim beyond the conditions originally tested.
+| config | ctx0 decode | 131k decode |
+|---|---:|---:|
+| stock control: reorder off / FA off | 69.84 t/s | 20.10 t/s |
+| deployed: Turbo + FA | 81.69 t/s | 40.88 t/s |
 
-**Performance attribution (corrected):** the depth-resolved A/B in `results/longctx-reorder.csv` (+17–18% @ctx0) toggles `GGML_SYCL_DISABLE_OPT`, which also disables upstream's pre-existing **dense** reorder — and that is where essentially the entire win lives. Benched against unpatched upstream (same flags, r=4), the MoE patch itself adds only ~0–1% end-to-end decode on NX2 (kernel-level ~+3% on the n=1 GEMV shape); decode is bottlenecked by the CPU-resident Delta-Net layers. Full 2×2 (old/master × unpatched/patched) in `results/upstream-pr/SUMMARY.md`.
+This is the reproducible project-level before/after: +17% at ctx0 and +103% at
+131k.
+
+Historical retained CSV data in `results/longctx-fa.csv` records stock control
+55.43 t/s at ctx0 and 19.99 t/s at 131k; deployed Turbo + FA 81.26 t/s at ctx0
+and 40.95 t/s at 131k. The 40.95 t/s number is not an old baseline; it is the
+deployed 131k-context result.
+
+The historical 55.43 t/s stock ctx0 value is retained in older CSV-only data
+from `/home/frosty40/nx2-turbo/results/longctx-fa.csv`. A harness check in
+`results/nx2-controls/ctx0-harness-check-20260610T231352Z/` reran the older
+short `-n 32/-n 64` style and the current `-n 128 -r 5` style; all reran around
+69.5-69.8 t/s. Use 69.x for reproducible stock ctx0 claims unless the original
+55.43 raw command/log is recovered.
+
+NX2 path-debug evidence was retained in
+`results/nx2-path-debug/20260610T223353Z/`. Q4_K_M and Q5_K_M both reach SYCL
+`ggml_sycl_mul_mat_id` with 3D expert tensors:
+
+```text
+Q4_K_M: blk.0.ffn_gate_exps.weight type=q4_K ne=[2048, 512, 256, 1]
+Q5_K_M: blk.0.ffn_gate_exps.weight type=q5_K ne=[2048, 512, 256, 1]
+```
+
+Model checksums are retained in `results/model-checksums.sha256`.
+
+First-token timing is retained in `results/nx2-first-token/20260610T230504Z/`.
+The cleaned-branch Q5_K_M control did not show a first-token lazy-reorder
+penalty under `-fa on`, `-fit off`, `--no-warmup`; median prompt/first-token
+eval was 1.12 s with reorder off and 1.05 s with reorder on. This is a whole
+optimization-path control, not isolated single-line attribution.
+
+## Reorder correctness checks
+Greedy (`--temp 0`) decode is not used as primary correctness evidence for the SYCL reorder path. The retained FA-on greedy artifacts in `results/upstream-pr/` diverge across reorder/base variants, which is expected for tiny numeric differences amplified by argmax. Correctness claims here rely on `test-backend-ops` and perplexity instead.
+
+## Reorder-on-MoE: correctness and scope
+Turbo extends the dense SYCL reorder to the fused MoE expert GEMV (`mul_mat_id`) for Q4_K and Q5_K. Correctness holds under the retained 2026-06-10 validation artifacts (`results/upstream-pr/SUMMARY.md`): `test-backend-ops` MUL_MAT_ID 714/714 vs CPU reference, base and candidate full-suite backend-op logs have the same 12 `GET_ROWS` failures, and PPL is statistically identical (5.5643 vs 5.5662 ±0.152). The earlier "byte-identical" / token-identical wording was an overclaim beyond the retained evidence.
+
+The project-level throughput numbers in this repo are measured on the NX2 GGUF variants, not on an abstract upstream model. Treat the contribution-candidate A/B in `results/upstream-pr/` as a narrow maintainer-readiness check for one llama.cpp code contribution, not as the benchmark story for the NX2 model artifacts.
 
 ## Accuracy reference
 The KLD / PPL reference is **Q6_K** (27 GB, fits VRAM in full at `-ngl 99`), which is near-lossless. All candidates (Q5_K and below) are lower precision, so the comparison is valid.

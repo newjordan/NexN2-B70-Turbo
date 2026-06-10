@@ -1,0 +1,13 @@
+label,rep,disable_opt,n_predict,load_ms,prompt_eval_ms,prompt_tokens,eval_ms,eval_runs,total_ms
+stock-first-token-reorder-off,1,1,1,1149.57,1149.18,12,0,1,1150.25
+stock-first-token-reorder-off,2,1,1,1101.4,1101.05,12,0,1,1101.99
+stock-first-token-reorder-off,3,1,1,1122.05,1121.67,12,0,1,1122.95
+stock-steady-reorder-off,1,1,129,1069.55,1069.19,12,2059.59,128,3193.68
+stock-steady-reorder-off,2,1,129,1080.71,1080.46,12,1952.93,128,3099.75
+stock-steady-reorder-off,3,1,129,892.19,891.88,12,1834.45,128,2779.82
+turbo-first-token-reorder-on,1,0,1,1078.39,1078.01,12,0,1,1079.46
+turbo-first-token-reorder-on,2,0,1,1049.82,1049.46,12,0,1,1050.44
+turbo-first-token-reorder-on,3,0,1,935.98,935.68,12,0,1,936.64
+turbo-steady-reorder-on,1,0,129,939.07,938.68,12,2052.43,128,3048.2
+turbo-steady-reorder-on,2,0,129,880.8,880.44,12,1867.34,128,2800.45
+turbo-steady-reorder-on,3,0,129,1002.79,1002.42,12,1852.84,128,2903.54

@@ -1,0 +1,31 @@
+0.00.220.719 I llama_completion: llama backend init
+0.00.220.732 I llama_completion: load the model and apply lora adapter, if any
+0.23.015.498 I llama_completion: llama threadpool init, n_threads = 16
+0.23.015.530 I 
+0.23.015.615 I system_info: n_threads = 16 (n_threads_batch = 16) / 32 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.23.015.617 I 
+0.23.015.797 I sampler seed: 1805742610
+0.23.015.808 I sampler params: 
+	repeat_last_n = 64, repeat_penalty = 1.000, frequency_penalty = 0.000, presence_penalty = 0.000
+	dry_multiplier = 0.000, dry_base = 1.750, dry_allowed_length = 2, dry_penalty_last_n = -1
+	top_k = 40, top_p = 0.950, min_p = 0.050, xtc_probability = 0.000, xtc_threshold = 0.100, typical_p = 1.000, top_n_sigma = -1.000, temp = 0.800
+	mirostat = 0, mirostat_lr = 0.100, mirostat_ent = 5.000, adaptive_target = -1.000, adaptive_decay = 0.900
+0.23.015.818 I sampler chain: logits -> ?penalties -> ?dry -> ?top-n-sigma -> top-k -> ?typical -> top-p -> min-p -> ?xtc -> temp-ext -> dist 
+0.23.015.819 I generate: n_ctx = 262144, n_batch = 2048, n_predict = 129, n_keep = 0
+0.23.015.819 I 
+ can be written as a product of prime numbers, and that this product is unique up to the order of the factors.
+
+For example, the number 12 equals \(2 \times 2 \times 3\). No other combination of prime factors can produce 12 except the same primes rearranged.
+
+An integer \(n\) is prime if \(n>1\) and its only positive divisors are \(1\) and \(n\). For instance, 7 has exactly these two divisors, so it is prime.
+
+A composite number is an integer greater than one that is not prime. It has at least
+
+0.26.209.166 I common_perf_print:    sampling time =      61.71 ms
+0.26.209.169 I common_perf_print:    samplers time =      26.64 ms /   141 tokens
+0.26.209.174 I common_perf_print:        load time =    1069.55 ms
+0.26.209.176 I common_perf_print: prompt eval time =    1069.19 ms /    12 tokens (   89.10 ms per token,    11.22 tokens per second)
+0.26.209.177 I common_perf_print:        eval time =    2059.59 ms /   128 runs   (   16.09 ms per token,    62.15 tokens per second)
+0.26.209.178 I common_perf_print:       total time =    3193.68 ms /   140 tokens
+0.26.209.179 I common_perf_print: unaccounted time =       3.19 ms /   0.1 %      (total - sampling - prompt eval - eval) / (total)
+0.26.209.181 I common_perf_print:    graphs reused =        127

@@ -1,0 +1,13 @@
+label,rep,disable_opt,n_predict,setup_ms,generate_to_perf_ms,prompt_eval_ms,eval_ms,total_observed_ms
+stock-first-token-reorder-off,1,1,1,30450.018,1149.894,1149.18,0.00,31600.266
+stock-first-token-reorder-off,2,1,1,21840.599,1101.670,1101.05,0.00,22942.588
+stock-first-token-reorder-off,3,1,1,22024.239,1122.600,1121.67,0.00,23147.187
+stock-steady-reorder-off,1,1,129,22794.766,3193.347,1069.19,2059.59,25988.447
+stock-steady-reorder-off,2,1,129,22893.350,3099.527,1080.46,1952.93,25993.106
+stock-steady-reorder-off,3,1,129,22577.036,2779.545,891.88,1834.45,25356.862
+turbo-first-token-reorder-on,1,0,1,21946.349,1079.105,1078.01,0.00,23025.815
+turbo-first-token-reorder-on,2,0,1,22278.755,1050.119,1049.46,0.00,23329.206
+turbo-first-token-reorder-on,3,0,1,22059.711,936.359,935.68,0.00,22996.349
+turbo-steady-reorder-on,1,0,129,22594.185,3047.857,938.68,2052.43,25642.381
+turbo-steady-reorder-on,2,0,129,22648.415,2800.128,880.44,1867.34,25448.869
+turbo-steady-reorder-on,3,0,129,22203.580,2903.207,1002.42,1852.84,25107.124

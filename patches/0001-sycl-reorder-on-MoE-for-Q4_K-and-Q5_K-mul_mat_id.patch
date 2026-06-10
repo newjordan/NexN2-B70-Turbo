@@ -1,23 +1,21 @@
-From b11935239f6d39e868d3bc4d32fa74d511826925 Mon Sep 17 00:00:00 2001
+From b5994f64ad8380d246d58d794d90bdbdccb34fdc Mon Sep 17 00:00:00 2001
 From: newjordan <newjordan@gmail.com>
-Date: Mon, 8 Jun 2026 19:59:21 -0500
-Subject: [PATCH 1/2] sycl: reorder-on-MoE for Q4_K and Q5_K mul_mat_id
+Date: Wed, 10 Jun 2026 17:43:50 -0500
+Subject: [PATCH] sycl: support reordered Q4_K and Q5_K MoE MUL_MAT_ID
 
-Extend the weight-reorder opt to the fused MoE expert GEMV (mul_mat_id), with reorder-aware reads across all decode and prefill sub-paths (adds a Q5_K reorder DMMV kernel and per-expert reorder converters). Decode +16.3% Q4_K_M / +17.7% Q5_K_M on Arc B70; verified vs CPU ref (test-backend-ops MUL_MAT_ID) and a server prefill-after-reorder differential.
-
-Assisted-by: Claude Opus 4.8
+Extend reordered-weight handling to fused MoE MUL_MAT_ID for Q4_K and Q5_K expert tensors and add Q5_K reordered DMMV coverage. Unsupported 3D reorder cases now fall back instead of aborting.
 ---
- ggml/src/ggml-sycl/dmmv.cpp      | 135 ++++++++++++++++++++++++-
- ggml/src/ggml-sycl/ggml-sycl.cpp | 167 +++++++++++++++++++++++++++++--
- ggml/src/ggml-sycl/mmvq.cpp      | 110 ++++++++++++++++++++
+ ggml/src/ggml-sycl/dmmv.cpp      | 134 +++++++++++++++++++++++++-
+ ggml/src/ggml-sycl/ggml-sycl.cpp | 158 +++++++++++++++++++++++++++++--
+ ggml/src/ggml-sycl/mmvq.cpp      | 110 +++++++++++++++++++++
  ggml/src/ggml-sycl/mmvq.hpp      |  17 ++++
- 4 files changed, 420 insertions(+), 9 deletions(-)
+ 4 files changed, 409 insertions(+), 10 deletions(-)
 
 diff --git a/ggml/src/ggml-sycl/dmmv.cpp b/ggml/src/ggml-sycl/dmmv.cpp
-index d80b0a3..d521f5f 100644
+index d80b0a3..e6d294f 100644
 --- a/ggml/src/ggml-sycl/dmmv.cpp
 +++ b/ggml/src/ggml-sycl/dmmv.cpp
-@@ -1041,6 +1041,121 @@ static void dequantize_mul_mat_vec_q5_k(const void *__restrict__ vx,
+@@ -1041,6 +1041,120 @@ static void dequantize_mul_mat_vec_q5_k(const void *__restrict__ vx,
      }
  }
  
@@ -120,8 +118,7 @@ index d80b0a3..d521f5f 100644
 +               dmin * smin;
 +    }
 +#else
-+    // The reordered Q5_K layout is only produced for QK_K == 256 (see reorder_qw_q5_k);
-+    // non-256 builds never set the reorder flag and use the standard kernel instead.
++    // The reordered Q5_K layout is only produced for QK_K == 256.
 +#endif
 +
 +    // sum up partial sums and write back result
@@ -139,7 +136,7 @@ index d80b0a3..d521f5f 100644
  static void dequantize_mul_mat_vec_q6_k(const void * __restrict__ vx, const float * __restrict__ yy, float * __restrict__ dst, const int ncols, int nrows,
                                          const sycl::nd_item<3> &item_ct1) {
  
-@@ -1614,6 +1729,19 @@ static void dequantize_mul_mat_vec_q4_K_sycl_reorder(const void *vx, const float
+@@ -1614,6 +1728,19 @@ static void dequantize_mul_mat_vec_q4_K_sycl_reorder(const void *vx, const float
          });
  }
  
@@ -159,7 +156,7 @@ index d80b0a3..d521f5f 100644
  static void dequantize_mul_mat_vec_q6_K_sycl_reorder(const void *vx, const float *y,
                                                       float *dst, const int ncols,
                                                       const int nrows,
-@@ -1710,7 +1838,12 @@ void ggml_sycl_op_dequantize_mul_mat_vec(
+@@ -1710,7 +1837,12 @@ void ggml_sycl_op_dequantize_mul_mat_vec(
              }
              break;
          case GGML_TYPE_Q5_K:
@@ -174,17 +171,14 @@ index d80b0a3..d521f5f 100644
          case GGML_TYPE_Q6_K:
              if ((ggml_tensor_extra_gpu *) dst->src[0]->extra &&
 diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
-index 3f246e8..9a80a39 100644
+index 3f246e8..fc98fcc 100644
 --- a/ggml/src/ggml-sycl/ggml-sycl.cpp
 +++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
-@@ -3793,6 +3793,105 @@ static bool reorder_qw_q4_k(uint8_t * data_device, size_t size, size_t offset, d
+@@ -3793,6 +3793,100 @@ static bool reorder_qw_q4_k(uint8_t * data_device, size_t size, size_t offset, d
      return true;
  }
  
-+// Reorder a Q4_K MoE expert-weight tensor: copy the whole tensor once, then scatter EVERY block of
-+// EVERY expert into its per-expert self-contained SoA in a SINGLE kernel. This avoids n_expert serial
-+// kernel launches on the first decode token (a ~1.5s spike). Atomic: one full-tensor temp allocated up
-+// front; if it fails, the data is untouched. Temp == tensor size (~150 MB for ffn_*_exps), fits VRAM.
++// Reorder each expert slice into a self-contained SoA layout.
 +static bool reorder_qw_q4_k_moe(uint8_t * data_device, size_t expert_bytes, int64_t n_expert, dpct::queue_ptr stream) {
 +    GGML_ASSERT(expert_bytes % sizeof(block_q4_K) == 0);
 +    const int    blocks_per_expert = (int) (expert_bytes / sizeof(block_q4_K));
@@ -229,9 +223,7 @@ index 3f246e8..9a80a39 100644
 +    return true;
 +}
 +
-+// MoE counterpart of reorder_qw_q5_k: scatter every block of every expert into its per-expert
-+// self-contained SoA ([qs][qh][scales][dm]) in a single kernel. Same atomic temp-buffer contract
-+// as reorder_qw_q4_k_moe (one full-tensor temp up front; untouched data on failure).
++// Reorder each Q5_K expert slice into [qs][qh][scales][dm].
 +static bool reorder_qw_q5_k_moe(uint8_t * data_device, size_t expert_bytes, int64_t n_expert, dpct::queue_ptr stream) {
 +    GGML_ASSERT(expert_bytes % sizeof(block_q5_K) == 0);
 +    const int    blocks_per_expert = (int) (expert_bytes / sizeof(block_q5_K));
@@ -283,14 +275,12 @@ index 3f246e8..9a80a39 100644
  static bool reorder_qw_q3_k(uint8_t * data_device, size_t size, size_t offset, dpct::queue_ptr stream) {
      GGML_ASSERT(size % sizeof(block_q3_K) == 0);
      GGML_ASSERT(offset % sizeof(block_q3_K) == 0);
-@@ -3948,6 +4047,22 @@ static bool reorder_qw(const ggml_tensor * src0, dpct::queue_ptr stream) {
+@@ -3948,6 +4042,20 @@ static bool reorder_qw(const ggml_tensor * src0, dpct::queue_ptr stream) {
      size_t nrows = src0->ne[1];
      size_t size = ggml_nbytes(src0);
  
-+    // MoE expert weights are a 3D tensor [ne0, ne1, n_expert] addressed per-expert via nb[2]. Reorder
-+    // EACH expert slice as a self-contained SoA so the per-expert nblocks (ne1*(ne0/QK_K)) and the
-+    // constant expert stride used by the read kernels stay correct. Atomic: allocate one shared temp
-+    // buffer up front; if it fails, no expert is touched and the reorder flag stays unset.
++    // MoE expert weights are addressed per expert via nb[2], so each slice must
++    // remain self-contained after reorder.
 +    if (src0->ne[2] > 1) {
 +        GGML_ASSERT((size_t) size == (size_t) src0->ne[2] * src0->nb[2]);
 +        switch (src0->type) {
@@ -299,21 +289,26 @@ index 3f246e8..9a80a39 100644
 +            case GGML_TYPE_Q5_K:
 +                return reorder_qw_q5_k_moe(data_device, src0->nb[2], src0->ne[2], stream);
 +            default:
-+                GGML_ABORT("reorder_qw(): MoE reorder only supports Q4_K and Q5_K");
++                return false;
 +        }
 +    }
 +
      switch (src0->type) {
          case GGML_TYPE_Q4_0:
              return reorder_qw_q4_0(data_device, ncols, nrows, size, 0, stream);
-@@ -4010,6 +4125,26 @@ static void opt_for_reorder(ggml_backend_sycl_context * ctx, const ggml_tensor *
+@@ -3962,7 +4070,6 @@ static bool reorder_qw(const ggml_tensor * src0, dpct::queue_ptr stream) {
+         case GGML_TYPE_Q6_K:
+             return reorder_qw_q6_k(data_device, size, 0, stream);
+         default:
+-            GGML_ABORT("reorder_qw() called with unsupported type");
+             return false;
+     }
+ }
+@@ -4010,6 +4117,23 @@ static void opt_for_reorder(ggml_backend_sycl_context * ctx, const ggml_tensor *
      }
  }
  
-+// MoE counterpart of opt_for_reorder: lazily reorder an expert-weight tensor (3D, per-expert SoA)
-+// the first time the fused MoE GEMV runs on it. Limited to Q4_K and Q5_K - the types with reorder
-+// read variants across every prefill and decode sub-path (fused GEMV, dense mmvq, DMMV, and the
-+// dequant-to-fp16/fp32 GEMM path); reordering a type without full coverage would corrupt a fallback read.
++// Lazily reorder supported MoE expert weights once their fused path is used.
 +static void opt_for_reorder_id(ggml_backend_sycl_context * ctx, const ggml_tensor * src0) {
 +    if (g_ggml_sycl_disable_optimize || !ctx->opt_feature.reorder) {
 +        return;
@@ -333,7 +328,7 @@ index 3f246e8..9a80a39 100644
  
  static bool can_use_dequantize_mul_mat_vec(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
      // The F16/BF16 qk=1 kernel iterates with stride 2*DMMV_X, requiring ne[0] to be
-@@ -4175,11 +4310,6 @@ static bool ggml_sycl_mul_mat_id_mmvq_fused(
+@@ -4175,11 +4299,6 @@ static bool ggml_sycl_mul_mat_id_mmvq_fused(
      if (ne10 != src0->ne[0] || ne10 % QK8_1 != 0) return false;
      if (!ggml_is_contiguous(src1)) return false;
  
@@ -345,7 +340,7 @@ index 3f246e8..9a80a39 100644
      const int64_t n_ids_per_group = ids->ne[0];
      if (ids->ne[1] != 1) return false;
      if (ne11 != 1 && ne11 != n_ids_per_group) return false;
-@@ -4189,16 +4319,37 @@ static bool ggml_sycl_mul_mat_id_mmvq_fused(
+@@ -4189,16 +4308,37 @@ static bool ggml_sycl_mul_mat_id_mmvq_fused(
      const int       n_experts_used   = (int) n_ids_per_group;
      const int       nrows            = (int) src0->ne[1];
  

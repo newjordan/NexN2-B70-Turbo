@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Turbo Understanding Notes</title>
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/github-markdown-css/5.2.0/github-markdown.min.css"
+    />
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+
+      body {
+        margin: 0;
+        padding: 2rem 1rem;
+        display: flex;
+        justify-content: center;
+        background: radial-gradient(circle at 15% 10%, #1f2a44, #0b1220);
+        color: #e5e7eb;
+      }
+
+      .content {
+        width: min(960px, 100%);
+        padding: 2rem 2.25rem 2.75rem;
+        background: #111827;
+        border: 1px solid #263347;
+        border-radius: 8px;
+        box-shadow: 0 8px 30px rgb(0 0 0 / 35%);
+        color: #e5e7eb;
+      }
+
+      .content .markdown-body {
+        color: #e5e7eb;
+      }
+
+      .content .markdown-body h1,
+      .content .markdown-body h2,
+      .content .markdown-body h3,
+      .content .markdown-body h4 {
+        color: #f8fafc;
+      }
+
+      .content .markdown-body a {
+        color: #7dd3fc;
+      }
+
+      .content .markdown-body code,
+      .content .markdown-body pre {
+        background: #1f2937;
+        color: #e2e8f0;
+      }
+
+      .content .markdown-body pre {
+        border: 1px solid #374151;
+      }
+
+      .content .markdown-body blockquote {
+        border-left-color: #4f46e5;
+      }
+
+      .content .markdown-body table {
+        background: #0f172a;
+        color: #e5e7eb;
+      }
+
+      .content .markdown-body table th,
+      .content .markdown-body table td {
+        border-color: #334155;
+      }
+    </style>
+  </head>
+  <body>
+    <article class="markdown-body content" id="md-content">
+      <p>Loading turbo-understanding.md...</p>
+    </article>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/14.1.4/marked.min.js"></script>
+    <script>
+      function escapeHtml(input) {
+        return input.replace(/[&<>"']/g, (c) =>
+          ({
+            "&": "&amp;",
+            "<": "&lt;",
+            ">": "&gt;",
+            '"': "&quot;",
+            "'": "&#39;",
+          }[c]),
+        );
+      }
+
+      async function loadMarkdown() {
+        const paths = [
+          "turbo-understanding.md",
+          "/docs/turbo-understanding.md",
+          `${window.location.pathname.replace(/[^/]*$/, "turbo-understanding.md")}`,
+          "../turbo-understanding.md",
+        ];
+
+        let lastError = "";
+        for (const path of paths) {
+          try {
+            const res = await fetch(path);
+            if (!res.ok) {
+              lastError = `HTTP ${res.status} for ${path}`;
+              continue;
+            }
+            return await res.text();
+          } catch (err) {
+            lastError = `${path}: ${err.message}`;
+          }
+        }
+
+        throw new Error(lastError || "Unable to load markdown");
+      }
+
+      async function renderMarkdown() {
+        const mount = document.getElementById("md-content");
+        try {
+          if (window.location.protocol === "file:") {
+            mount.innerHTML =
+              "<p>Open this page over HTTP/HTTPS, not as a local file. " +
+              "Use your Tailscale host URL, for example " +
+              "<code>http://&lt;host-ip&gt;:4173/docs/turbo-understanding.html</code>.</p>";
+            return;
+          }
+
+          const md = await loadMarkdown();
+
+          if (window.marked && typeof window.marked.parse === "function") {
+            mount.innerHTML = window.marked.parse(md);
+          } else {
+            mount.innerHTML =
+              `<pre style="white-space: pre-wrap; word-wrap: break-word;"><code>${escapeHtml(
+                md,
+              )}</code></pre>`;
+          }
+        } catch (err) {
+          mount.textContent = `Failed to load markdown file: ${err.message}`;
+        }
+      }
+
+      renderMarkdown();
+    </script>
+  </body>
+</html>

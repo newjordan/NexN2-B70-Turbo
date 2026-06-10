@@ -36,7 +36,7 @@ build() { # ref builddir
 }
 
 greedy() { # bin model disable_opt tag
-  GGML_SYCL_DISABLE_OPT="$3" "$1/bin/llama-completion" -m "$2" -ngl 99 -fa on \
+  GGML_SYCL_DISABLE_OPT="$3" "$1/bin/llama-completion" -m "$2" -ngl 99 -fa off \
     --temp 0 -s 0 -n 64 -p "$PROMPT" -no-cnv 2>/dev/null \
     | tail -n +2 > "$OUT/greedy-$4.txt"
 }
@@ -55,7 +55,7 @@ step "test-backend-ops FULL (pr) — slow"
 "$PR/bin/test-backend-ops" test > "$OUT/backend-ops-full-pr.log" 2>&1
 echo "FULL(pr): $(grep -cE 'OK$' "$OUT/backend-ops-full-pr.log") OK, $(grep -cE 'FAIL' "$OUT/backend-ops-full-pr.log") FAIL" >&2
 
-# ---- 2. greedy token-identical differentials ------------------------------
+# ---- 2. FA-off greedy differentials ---------------------------------------
 for m in Q4 Q5; do
   model_var=${m}; model=${!model_var}
   step "greedy differential $m"
