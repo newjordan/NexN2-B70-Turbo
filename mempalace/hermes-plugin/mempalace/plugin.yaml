@@ -1,0 +1,3 @@
+name: mempalace
+version: 1.0.0
+description: "Mempalace — automatic local long-term research memory (Letta archival + pgvector + nomic embeddings, fully on-box)."

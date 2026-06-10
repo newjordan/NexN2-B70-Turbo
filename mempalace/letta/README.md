@@ -51,3 +51,24 @@ End-to-end validated: facts saved in one `hermes -z` session were recalled
 verbatim by a brand-new session (no shared history) via `memory_search`.
 Requires letta server (:8283, `serve_letta.sh`) + embeddings (:8091,
 `../lean/serve_embed.sh`) to be up.
+
+## Automatic memory (supersedes the MCP bridge for Hermes)
+
+`../hermes-plugin/mempalace/` is a Hermes **MemoryProvider plugin** (symlinked
+to `~/.hermes/plugins/mempalace`, activated via `memory.provider: mempalace`
+in `~/.hermes/config.yaml`, endpoint config in `~/.hermes/mempalace.json`).
+Retention is structural — no model cooperation needed:
+
+- `sync_turn` — every completed exchange is archived the moment it ends
+  (dedup-guarded, `<think>` stripped, tagged with session + timestamp)
+- `on_pre_compress` — the full conversation span is archived before Hermes
+  compression summarizes it away (belt-and-braces; turns are already saved)
+- `on_delegation` — subagent task/result pairs are archived
+- `prefetch` — top-4 relevant memories are auto-injected before every turn
+  as a [MEMPALACE RECALL] block
+- `memory_search` / `memory_save` tools remain for explicit access
+
+Validated: a fact stated casually in one session (zero memory instructions)
+was auto-archived and recalled verbatim by a fresh session that simply asked
+about it. The MCP bridge (`mcp_memory.py`) was deregistered from Hermes to
+avoid duplicate tools — it remains useful for non-Hermes MCP clients.
