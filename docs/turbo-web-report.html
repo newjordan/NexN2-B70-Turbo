@@ -1,0 +1,712 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NexN2 B70 Turbo Due-Diligence Report</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b1020;
+        --panel: #111827;
+        --panel-2: #172033;
+        --text: #e5e7eb;
+        --muted: #9ca3af;
+        --line: #2f3b52;
+        --accent: #38bdf8;
+        --accent-2: #a7f3d0;
+        --warn: #fbbf24;
+        --danger: #f87171;
+        --code: #0f172a;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background:
+          linear-gradient(180deg, rgba(56, 189, 248, 0.08), transparent 280px),
+          var(--bg);
+        color: var(--text);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+        line-height: 1.55;
+      }
+
+      a {
+        color: var(--accent);
+      }
+
+      .shell {
+        display: grid;
+        grid-template-columns: 280px minmax(0, 1fr);
+        min-height: 100vh;
+      }
+
+      aside {
+        position: sticky;
+        top: 0;
+        height: 100vh;
+        overflow: auto;
+        padding: 22px 18px;
+        border-right: 1px solid var(--line);
+        background: rgba(8, 13, 28, 0.92);
+      }
+
+      main {
+        min-width: 0;
+        padding: 28px;
+      }
+
+      .brand {
+        margin-bottom: 22px;
+      }
+
+      .brand h1 {
+        margin: 0 0 6px;
+        font-size: 20px;
+        line-height: 1.2;
+      }
+
+      .brand p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .nav-title {
+        margin: 18px 0 8px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+
+      nav a {
+        display: block;
+        padding: 8px 10px;
+        border-radius: 6px;
+        color: var(--text);
+        text-decoration: none;
+        font-size: 14px;
+      }
+
+      nav a:hover,
+      nav a:focus {
+        background: var(--panel-2);
+        color: #ffffff;
+      }
+
+      .hero {
+        margin-bottom: 24px;
+      }
+
+      .hero h2 {
+        margin: 0 0 8px;
+        font-size: 34px;
+        line-height: 1.15;
+      }
+
+      .hero p {
+        max-width: 900px;
+        margin: 0;
+        color: var(--muted);
+      }
+
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin: 22px 0 26px;
+      }
+
+      .card {
+        min-height: 116px;
+        padding: 15px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+      }
+
+      .card .label {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+
+      .card .value {
+        margin-top: 8px;
+        font-size: 25px;
+        font-weight: 800;
+      }
+
+      .card .note {
+        margin-top: 5px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .status-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin: 0 0 28px;
+      }
+
+      .status {
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(17, 24, 39, 0.78);
+      }
+
+      .status strong {
+        display: block;
+        margin-bottom: 4px;
+      }
+
+      .status span {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .ok {
+        border-left: 4px solid var(--accent-2);
+      }
+
+      .warn {
+        border-left: 4px solid var(--warn);
+      }
+
+      section.report-section {
+        margin: 0 0 22px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        overflow: hidden;
+      }
+
+      .section-header {
+        display: flex;
+        align-items: start;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 16px 18px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(23, 32, 51, 0.7);
+      }
+
+      .section-header h3 {
+        margin: 0;
+        font-size: 19px;
+      }
+
+      .section-header p {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .section-header a {
+        white-space: nowrap;
+        font-size: 13px;
+      }
+
+      .content {
+        padding: 18px;
+        overflow-x: auto;
+      }
+
+      .content h1,
+      .content h2,
+      .content h3 {
+        margin: 22px 0 10px;
+        line-height: 1.25;
+      }
+
+      .content h1:first-child,
+      .content h2:first-child,
+      .content h3:first-child {
+        margin-top: 0;
+      }
+
+      .content p {
+        margin: 0 0 12px;
+      }
+
+      .content ul,
+      .content ol {
+        margin: 0 0 14px 22px;
+        padding: 0;
+      }
+
+      .content li {
+        margin: 4px 0;
+      }
+
+      .content table {
+        width: max-content;
+        min-width: min(100%, 680px);
+        border-collapse: collapse;
+        margin: 12px 0 16px;
+        font-size: 14px;
+      }
+
+      .content th,
+      .content td {
+        padding: 8px 10px;
+        border: 1px solid var(--line);
+        text-align: left;
+        vertical-align: top;
+      }
+
+      .content th {
+        background: #1f2937;
+      }
+
+      code,
+      pre {
+        font-family:
+          "SFMono-Regular", Consolas, "Liberation Mono", ui-monospace, monospace;
+      }
+
+      code {
+        padding: 2px 5px;
+        border-radius: 4px;
+        background: var(--code);
+      }
+
+      pre {
+        margin: 12px 0 16px;
+        padding: 13px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--code);
+        overflow-x: auto;
+        white-space: pre-wrap;
+      }
+
+      .error {
+        padding: 14px;
+        border: 1px solid var(--danger);
+        border-radius: 8px;
+        color: #fecaca;
+      }
+
+      @media (max-width: 980px) {
+        .shell {
+          display: block;
+        }
+
+        aside {
+          position: relative;
+          height: auto;
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+
+        main {
+          padding: 18px;
+        }
+
+        .cards,
+        .status-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .hero h2 {
+          font-size: 27px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <aside>
+        <div class="brand">
+          <h1>NexN2 B70 Turbo</h1>
+          <p>Local due-diligence web report</p>
+        </div>
+        <div class="nav-title">Core</div>
+        <nav id="core-nav"></nav>
+        <div class="nav-title">Evidence</div>
+        <nav id="evidence-nav"></nav>
+        <div class="nav-title">Data</div>
+        <nav id="data-nav"></nav>
+      </aside>
+
+      <main>
+        <div class="hero">
+          <h2>Turbo Validation And Packaging Report</h2>
+          <p>
+            This page assembles the current committed due-diligence artifacts for
+            the model package and the llama.cpp SYCL backend contribution
+            candidate. It is served from the local repo and does not require
+            external assets.
+          </p>
+        </div>
+
+        <div class="cards">
+          <div class="card">
+            <div class="label">Fresh ctx0 control</div>
+            <div class="value">69.84 → 81.69</div>
+            <div class="note">tok/s, reproducible run</div>
+          </div>
+          <div class="card">
+            <div class="label">Fresh 131k control</div>
+            <div class="value">20.10 → 40.88</div>
+            <div class="note">tok/s, +103%</div>
+          </div>
+          <div class="card">
+            <div class="label">Backend ops</div>
+            <div class="value">11502 / 11514</div>
+            <div class="note">same base/candidate failures</div>
+          </div>
+          <div class="card">
+            <div class="label">Ready patch</div>
+            <div class="value">b5994f6</div>
+            <div class="note">single-commit branch</div>
+          </div>
+        </div>
+
+        <div class="status-grid">
+          <div class="status ok">
+            <strong>Model package evidence retained</strong>
+            <span>Checksums, controls, frontier data, and model-card framing are committed.</span>
+          </div>
+          <div class="status ok">
+            <strong>NX2 path proof retained</strong>
+            <span>Actual Q4/Q5 NX2 artifacts hit 3D expert MUL_MAT_ID on SYCL.</span>
+          </div>
+          <div class="status warn">
+            <strong>Historical 55.43 is not reproducible</strong>
+            <span>Kept as historical CSV-only data; fresh ctx0 stock controls land around 69.x.</span>
+          </div>
+        </div>
+
+        <div id="sections"></div>
+      </main>
+    </div>
+
+    <script>
+      const docs = [
+        {
+          group: "core",
+          title: "Canonical Lab Report",
+          path: "lab-report.md",
+          note: "Main report and artifact index.",
+        },
+        {
+          group: "core",
+          title: "Project README",
+          path: "../README.md",
+          note: "Public-facing project summary.",
+        },
+        {
+          group: "core",
+          title: "Methodology",
+          path: "methodology.md",
+          note: "Measurement and correctness methodology.",
+        },
+        {
+          group: "core",
+          title: "HF Model Card",
+          path: "HF_MODEL_CARD.md",
+          note: "Model package presentation.",
+        },
+        {
+          group: "core",
+          title: "Turbo Understanding",
+          path: "turbo-understanding.md",
+          note: "Technical explanation for review.",
+        },
+        {
+          group: "core",
+          title: "Packaging Checklist",
+          path: "packaging-checklist.md",
+          note: "What belongs in the report package.",
+        },
+        {
+          group: "evidence",
+          title: "SYCL Readiness Notes",
+          path: "upstream-sycl-readiness.md",
+          note: "llama.cpp contribution readiness notes.",
+        },
+        {
+          group: "evidence",
+          title: "Backend Validation Summary",
+          path: "../results/upstream-pr/SUMMARY.md",
+          note: "Base/candidate backend-op and PPL summary.",
+        },
+        {
+          group: "evidence",
+          title: "Patch README",
+          path: "../patches/README.md",
+          note: "Patch application and build notes.",
+        },
+        {
+          group: "evidence",
+          title: "Micro-MoE Fixture",
+          path: "../results/micro-moe/README.md",
+          note: "Smaller reproducible MoE smoke fixture.",
+        },
+        {
+          group: "evidence",
+          title: "First-Token Timing",
+          path: "../results/nx2-first-token/README.md",
+          note: "Load / first-token / steady-state timing.",
+        },
+        {
+          group: "evidence",
+          title: "Ctx0 Harness Check",
+          path: "../results/nx2-controls/ctx0-harness-check-20260610T231352Z/README.md",
+          note: "Historical 55.43 investigation.",
+        },
+        {
+          group: "data",
+          title: "Model Checksums",
+          path: "../results/model-checksums.sha256",
+          note: "SHA256 package inventory.",
+          raw: true,
+        },
+        {
+          group: "data",
+          title: "Fresh NX2 First-Token Timeline",
+          path: "../results/nx2-first-token/20260610T230504Z/timeline.csv",
+          note: "Raw first-token timing CSV.",
+          csv: true,
+        },
+        {
+          group: "data",
+          title: "Fresh NX2 Control JSON Summary",
+          path: "../results/nx2-controls/20260610T220943Z/stock-ctx0-reorder-off-fa-off.json",
+          note: "One retained control artifact.",
+          raw: true,
+        },
+        {
+          group: "data",
+          title: "Long Context FA CSV",
+          path: "../results/longctx-fa.csv",
+          note: "Historical/depth context data.",
+          csv: true,
+        },
+      ];
+
+      function slug(input) {
+        return input.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+      }
+
+      function escapeHtml(input) {
+        return input.replace(/[&<>"']/g, (c) => ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;",
+        })[c]);
+      }
+
+      function inlineMd(input) {
+        return escapeHtml(input)
+          .replace(/`([^`]+)`/g, "<code>$1</code>")
+          .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+          .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+      }
+
+      function tableFromMarkdown(lines, index) {
+        const rows = [];
+        let i = index;
+        while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+          rows.push(lines[i]);
+          i++;
+        }
+        if (rows.length < 2 || !/^\s*\|?\s*:?-{3,}:?\s*\|/.test(rows[1])) {
+          return null;
+        }
+        const htmlRows = rows
+          .filter((_, rowIndex) => rowIndex !== 1)
+          .map((row, rowIndex) => {
+            const cells = row.trim().replace(/^\|/, "").replace(/\|$/, "").split("|");
+            const tag = rowIndex === 0 ? "th" : "td";
+            return `<tr>${cells.map((cell) => `<${tag}>${inlineMd(cell.trim())}</${tag}>`).join("")}</tr>`;
+          })
+          .join("");
+        return { html: `<table>${htmlRows}</table>`, next: i };
+      }
+
+      function renderCsv(text) {
+        const lines = text.trim().split(/\r?\n/);
+        if (!lines.length) return "<pre></pre>";
+        const rows = lines.map((line) => line.split(","));
+        const body = rows
+          .map((cells, index) => {
+            const tag = index === 0 ? "th" : "td";
+            return `<tr>${cells.map((cell) => `<${tag}>${escapeHtml(cell.trim())}</${tag}>`).join("")}</tr>`;
+          })
+          .join("");
+        return `<table>${body}</table>`;
+      }
+
+      function renderMarkdown(text) {
+        const lines = text.replace(/\r\n/g, "\n").split("\n");
+        let html = "";
+        let paragraph = [];
+        let list = null;
+        let inCode = false;
+        let code = [];
+
+        function closeParagraph() {
+          if (paragraph.length) {
+            html += `<p>${inlineMd(paragraph.join(" "))}</p>`;
+            paragraph = [];
+          }
+        }
+
+        function closeList() {
+          if (list) {
+            html += `</${list}>`;
+            list = null;
+          }
+        }
+
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+
+          if (line.startsWith("```")) {
+            if (inCode) {
+              html += `<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`;
+              inCode = false;
+              code = [];
+            } else {
+              closeParagraph();
+              closeList();
+              inCode = true;
+            }
+            continue;
+          }
+
+          if (inCode) {
+            code.push(line);
+            continue;
+          }
+
+          const table = tableFromMarkdown(lines, i);
+          if (table) {
+            closeParagraph();
+            closeList();
+            html += table.html;
+            i = table.next - 1;
+            continue;
+          }
+
+          if (/^#{1,4}\s+/.test(line)) {
+            closeParagraph();
+            closeList();
+            const level = line.match(/^#+/)[0].length;
+            html += `<h${Math.min(level, 3)}>${inlineMd(line.replace(/^#{1,4}\s+/, ""))}</h${Math.min(level, 3)}>`;
+            continue;
+          }
+
+          if (/^\s*[-*]\s+/.test(line)) {
+            closeParagraph();
+            if (list !== "ul") {
+              closeList();
+              html += "<ul>";
+              list = "ul";
+            }
+            html += `<li>${inlineMd(line.replace(/^\s*[-*]\s+/, ""))}</li>`;
+            continue;
+          }
+
+          if (/^\s*\d+\.\s+/.test(line)) {
+            closeParagraph();
+            if (list !== "ol") {
+              closeList();
+              html += "<ol>";
+              list = "ol";
+            }
+            html += `<li>${inlineMd(line.replace(/^\s*\d+\.\s+/, ""))}</li>`;
+            continue;
+          }
+
+          if (!line.trim()) {
+            closeParagraph();
+            closeList();
+            continue;
+          }
+
+          paragraph.push(line.trim());
+        }
+
+        closeParagraph();
+        closeList();
+        if (inCode) {
+          html += `<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`;
+        }
+        return html;
+      }
+
+      function addNav(doc) {
+        const nav = document.getElementById(`${doc.group}-nav`);
+        const link = document.createElement("a");
+        link.href = `#${slug(doc.title)}`;
+        link.textContent = doc.title;
+        nav.appendChild(link);
+      }
+
+      async function addSection(doc) {
+        addNav(doc);
+        const id = slug(doc.title);
+        const section = document.createElement("section");
+        section.className = "report-section";
+        section.id = id;
+        section.innerHTML = `
+          <div class="section-header">
+            <div>
+              <h3>${escapeHtml(doc.title)}</h3>
+              <p>${escapeHtml(doc.note)}</p>
+            </div>
+            <a href="${doc.path}">Open raw</a>
+          </div>
+          <div class="content">Loading...</div>
+        `;
+        document.getElementById("sections").appendChild(section);
+        const content = section.querySelector(".content");
+
+        try {
+          const response = await fetch(doc.path);
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+          const text = await response.text();
+          if (doc.csv) {
+            content.innerHTML = renderCsv(text);
+          } else if (doc.raw) {
+            content.innerHTML = `<pre><code>${escapeHtml(text)}</code></pre>`;
+          } else {
+            content.innerHTML = renderMarkdown(text);
+          }
+        } catch (error) {
+          content.innerHTML = `<div class="error">Failed to load ${escapeHtml(doc.path)}: ${escapeHtml(error.message)}</div>`;
+        }
+      }
+
+      async function init() {
+        if (window.location.protocol === "file:") {
+          document.getElementById("sections").innerHTML =
+            '<div class="error">Open this report through the local HTTP server, not as a file:// URL.</div>';
+          return;
+        }
+        for (const doc of docs) {
+          await addSection(doc);
+        }
+      }
+
+      init();
+    </script>
+  </body>
+</html>
