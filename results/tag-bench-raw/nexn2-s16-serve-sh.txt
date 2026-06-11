@@ -1,0 +1,7 @@
+ENTITIES: server relauncher script ; NexN2 ; llama.cpp server ; Bash ; agent sandbox
+METRICS: :8090 ; 262144 ; 99 ; 1800
+FILES: /opt/intel/oneapi/setvars.sh ; /home/frosty40/llama.cpp/build/bin ; /home/frosty40/models/nex-n2-mini/sweep/NX2-Q5_K_M.gguf ; /home/frosty40/nx2-niah-run ; nx2-niah-run/server.pid
+NUMBERS: 2026-06-10 12:00 ; 262144 ; 99 ; 8090 ; 1800
+ERRORS: exit 144 ; fatal abort
+DECISIONS: run this script via Bash with dangerouslyDisableSandbox=true ; call with run_in_background or a generous timeout
+TOPICS: server ; script ; model ; context ; GPU

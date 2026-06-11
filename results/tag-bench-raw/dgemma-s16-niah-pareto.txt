@@ -1,0 +1,8 @@
+
+ENTITIES: NexN2 ; B70
+METRICS: 29.2 t/s ; 65.8 ; 51 s
+FILES: eval/niah/niah_sweep.py
+NUMBERS: 155 ; 0 ; 32k ; 196k
+ERRORS: 0 FAIL
+DECISIONS: verdicts unaffected
+TOPICS: NIA ; long-context ; sweep ; Pareto ; tokens

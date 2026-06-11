@@ -1,0 +1,8 @@
+
+ENTITIES: llama.cpp ; oneAPI
+METRICS: 8090 ; 1800 seconds
+FILES: /opt/intel/oneapi/setvars.sh ; nx2-niah-run/server.log
+NUMBERS: 262144 ; 99 ; 144 ; 0
+ERRORS: exit 1 ; exit 144 ; ; fatal abort
+DECISIONS: NONE
+TOPICS: server ; context ; model ; gpu

@@ -1,0 +1,7 @@
+ENTITIES: Nex-N2-mini ; Intel Arc Pro B70 ; Ubuntu 24.04 ; oneAPI ; llama.cpp ; Turbo
+METRICS: 32 GB GDDR6 ECC ; 256-bit ; ~600 GB/s ; ~598 read / ~525 copy ; 32 Xe2 cores ; 256 XMX engines @ 2.8 GHz ; XMX peak ~367 TOPS int8 / ~183 TFLOPS fp16 ; 85.7 t/s ; 52.8
+FILES: python gguf-py/gguf/scripts/gguf_set_metadata.py ; NexN2.gguf ; results/upstream-pr/ ; results/upstream-pr/SUMMARY.md ; results/longctx-reorder.csv
+NUMBERS: 2026-06-10 12:00 ; 16 ; 41 ; 1 ; 40 ; 0 ; 4.88 bpw ; 4.32 bpw ; 714/714 ; 5.5643 ; 5.5662 ±0.152
+ERRORS: NONE
+DECISIONS: This is lossless for standard inference ; Correctness claims here rely on `test-backend-ops` and perplexity instead ; Correctness holds under the retained 2026-06-10 validation artifacts ; the earlier "byte-identical" / token-identical wording was an overclaim beyond the retained evidence
+TOPICS: methodology ; Hardware ; Loading ; Speed ; Reorder ; correctness ; performance

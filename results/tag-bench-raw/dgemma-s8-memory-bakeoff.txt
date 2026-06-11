@@ -1,0 +1,8 @@
+
+ENTITIES: MemPalace ; Letta ; NexN2
+METRICS: 0.25 ; 1.00 ; 30.0 ; 17.2 ; 390,128
+FILES: memory-bakeoff.csv ; eval/memory/bakeoff.py ; README.md
+NUMBERS: 40-step ; 262144 ; 8× ; ; ; 6×
+ERRORS: NONE
+DECISIONS: raw window won ; Letta is the integration candidate
+TOPICS: memory ; recall ; latency ; tokens ; storage

@@ -1,0 +1,7 @@
+ENTITIES: NexN2 ; eval/niah/niah_sweep.py ; yarn2-iq4xs/f16
+METRICS: 155 PASS ; 0 FAIL ; 21-29 ; 260k/520k ; 32k-196k
+FILES: eval/niah/niah_sweep.py
+NUMBERS: 2026-06-10 ; 12:00 ; 01:50-02:35 ; 155 ; 0
+ERRORS: NONE
+DECISIONS: verdicts unaffected ; clean
+TOPICS: NIAH ; Pareto sweep ; long-context sweep ; probes ; pass

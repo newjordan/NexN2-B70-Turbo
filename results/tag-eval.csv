@@ -1,0 +1,97 @@
+arm,probe_kind,probe,detail,hit_at_4,rank
+control,question,d01,--rq-watchdog-ms=4750,1,1
+control,question,d02,svc/relay/qmon_v3.py,1,1
+control,question,d03,EAGAIN_RELAY_017,1,1
+control,question,d04,37.4 t/s,1,1
+control,question,d05,firmware 2.19.7-rc3,1,1
+control,question,d06,commit 9f3ab12,1,1
+control,question,d07,:9412,1,2
+control,question,d08,KV_SPILL_DIR=/scratch/kv9,1,1
+control,question,d09,0.731,1,1
+control,question,d10,18.4 GiB,1,1
+control,question,d11,--prefetch-depth=6,1,1
+control,question,d12,ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY at allocator.cpp:212,1,1
+control,question,d13,cron 03:45,1,1
+control,question,d14,run-stamp 20260603T0214Z,1,1
+control,question,d15,/var/lib/lattice/checkpoints/epoch_441.pt,1,1
+control,question,d16,PPL 6.4412,1,1
+dgemma,question,d01,--rq-watchdog-ms=4750,1,1
+dgemma,question,d02,svc/relay/qmon_v3.py,1,1
+dgemma,question,d03,EAGAIN_RELAY_017,1,1
+dgemma,question,d04,37.4 t/s,1,1
+dgemma,question,d05,firmware 2.19.7-rc3,1,1
+dgemma,question,d06,commit 9f3ab12,1,1
+dgemma,question,d07,:9412,1,3
+dgemma,question,d08,KV_SPILL_DIR=/scratch/kv9,1,1
+dgemma,question,d09,0.731,1,1
+dgemma,question,d10,18.4 GiB,1,1
+dgemma,question,d11,--prefetch-depth=6,1,1
+dgemma,question,d12,ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY at allocator.cpp:212,1,1
+dgemma,question,d13,cron 03:45,1,1
+dgemma,question,d14,run-stamp 20260603T0214Z,1,1
+dgemma,question,d15,/var/lib/lattice/checkpoints/epoch_441.pt,1,1
+dgemma,question,d16,PPL 6.4412,1,1
+nexn2,question,d01,--rq-watchdog-ms=4750,1,1
+nexn2,question,d02,svc/relay/qmon_v3.py,1,1
+nexn2,question,d03,EAGAIN_RELAY_017,1,1
+nexn2,question,d04,37.4 t/s,1,1
+nexn2,question,d05,firmware 2.19.7-rc3,1,1
+nexn2,question,d06,commit 9f3ab12,1,1
+nexn2,question,d07,:9412,1,2
+nexn2,question,d08,KV_SPILL_DIR=/scratch/kv9,1,1
+nexn2,question,d09,0.731,1,1
+nexn2,question,d10,18.4 GiB,1,1
+nexn2,question,d11,--prefetch-depth=6,1,1
+nexn2,question,d12,ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY at allocator.cpp:212,1,1
+nexn2,question,d13,cron 03:45,1,1
+nexn2,question,d14,run-stamp 20260603T0214Z,1,1
+nexn2,question,d15,/var/lib/lattice/checkpoints/epoch_441.pt,1,1
+nexn2,question,d16,PPL 6.4412,1,1
+control,identifier,d01,--rq-watchdog-ms=4750,1,1
+control,identifier,d02,svc/relay/qmon_v3.py,1,1
+control,identifier,d03,EAGAIN_RELAY_017,1,1
+control,identifier,d04,37.4 t/s,1,1
+control,identifier,d05,firmware 2.19.7-rc3,1,1
+control,identifier,d06,commit 9f3ab12,1,1
+control,identifier,d07,:9412,1,1
+control,identifier,d08,KV_SPILL_DIR=/scratch/kv9,1,1
+control,identifier,d09,0.731,1,1
+control,identifier,d10,18.4 GiB,1,1
+control,identifier,d11,--prefetch-depth=6,1,1
+control,identifier,d12,ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY at allocator.cpp:212,1,1
+control,identifier,d13,cron 03:45,1,1
+control,identifier,d14,run-stamp 20260603T0214Z,1,1
+control,identifier,d15,/var/lib/lattice/checkpoints/epoch_441.pt,1,1
+control,identifier,d16,PPL 6.4412,1,1
+dgemma,identifier,d01,--rq-watchdog-ms=4750,1,1
+dgemma,identifier,d02,svc/relay/qmon_v3.py,1,1
+dgemma,identifier,d03,EAGAIN_RELAY_017,1,1
+dgemma,identifier,d04,37.4 t/s,1,1
+dgemma,identifier,d05,firmware 2.19.7-rc3,1,1
+dgemma,identifier,d06,commit 9f3ab12,1,1
+dgemma,identifier,d07,:9412,1,1
+dgemma,identifier,d08,KV_SPILL_DIR=/scratch/kv9,1,1
+dgemma,identifier,d09,0.731,1,1
+dgemma,identifier,d10,18.4 GiB,1,1
+dgemma,identifier,d11,--prefetch-depth=6,1,1
+dgemma,identifier,d12,ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY at allocator.cpp:212,1,1
+dgemma,identifier,d13,cron 03:45,1,1
+dgemma,identifier,d14,run-stamp 20260603T0214Z,1,1
+dgemma,identifier,d15,/var/lib/lattice/checkpoints/epoch_441.pt,1,1
+dgemma,identifier,d16,PPL 6.4412,1,1
+nexn2,identifier,d01,--rq-watchdog-ms=4750,1,1
+nexn2,identifier,d02,svc/relay/qmon_v3.py,1,1
+nexn2,identifier,d03,EAGAIN_RELAY_017,1,1
+nexn2,identifier,d04,37.4 t/s,1,1
+nexn2,identifier,d05,firmware 2.19.7-rc3,1,1
+nexn2,identifier,d06,commit 9f3ab12,1,1
+nexn2,identifier,d07,:9412,1,1
+nexn2,identifier,d08,KV_SPILL_DIR=/scratch/kv9,1,1
+nexn2,identifier,d09,0.731,1,1
+nexn2,identifier,d10,18.4 GiB,1,1
+nexn2,identifier,d11,--prefetch-depth=6,1,1
+nexn2,identifier,d12,ZE_RESULT_ERROR_OUT_OF_DEVICE_MEMORY at allocator.cpp:212,1,1
+nexn2,identifier,d13,cron 03:45,1,1
+nexn2,identifier,d14,run-stamp 20260603T0214Z,1,1
+nexn2,identifier,d15,/var/lib/lattice/checkpoints/epoch_441.pt,1,1
+nexn2,identifier,d16,PPL 6.4412,1,1

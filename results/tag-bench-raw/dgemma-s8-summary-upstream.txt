@@ -1,0 +1,8 @@
+
+ENTITIES: SYCL ; B70 ; CPU ; GGML_SYCL
+METRICS: +4.7% ; +4.3% ; +17.9% ; +17.3% ; ~1%
+FILES: eval/upstream/test_matrix.sh ; bench-base.json ; bench-pr.json
+NUMBERS: 2026-06-10 ; 714/714 ; 11502/11514 ; 02%
+ERRORS: FAIL
+DECISIONS: The patch is numerically sound in the retained targeted checks
+TOPICS: validation ; performance ; correctness ; MoE ; decode

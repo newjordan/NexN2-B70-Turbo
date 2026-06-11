@@ -1,0 +1,8 @@
+
+ENTITIES: SYCL ; B70 ; CPU ; GGML_SYCL
+METRICS: +4.7% ; +0.2% ; +4.3% ; +0.1% ; +1.9%
+FILES: eval/upstream/test_matrix.sh ; bench-base.json ; bench-pr.json
+NUMBERS: 2026-06-10 ; d2462f8 ; f0156d1
+ERRORS: GET_ROWS tolerance misses ; FAIL lines ; FA-on
+DECISIONS: The patch is numerically sound in the retained targeted checks
+TOPICS: validation ; performance ; correctness ; MoE ; decode

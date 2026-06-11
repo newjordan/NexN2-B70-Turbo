@@ -10,7 +10,14 @@ autoresearch loops: data retention is STRUCTURAL, not behavioral —
   prefetch         relevant memories are auto-injected before every turn
   tools            memory_search / memory_save remain for explicit access
 
-Config: ~/.hermes/mempalace.json  {"base_url": "...:8283", "agent_id": "agent-..."}
+Retrieval is two-leg: a local verbatim TAG INDEX (built asynchronously by
+mempalace/diffusion/tagger.py — every tag a validated substring of the
+archived item, see results/tag-recall.md) plus Letta embedding search.
+Injected content is always verbatim archive text; the tag layer changes
+WHICH items surface, never what they say.
+
+Config: ~/.hermes/mempalace.json  {"base_url": "...:8283", "agent_id": "agent-...",
+        "tagger": {"db": "...", "queue_dir": "...", "enabled": true}}
 Stdlib only — runs inside the hermes-agent process.
 """
 from __future__ import annotations
@@ -20,6 +27,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import threading
 import time
 import urllib.parse
@@ -31,19 +39,24 @@ from agent.memory_provider import MemoryProvider
 logger = logging.getLogger(__name__)
 
 CONFIG_PATH = os.path.expanduser("~/.hermes/mempalace.json")
+TAG_DB_DEFAULT = "~/.hermes/mempalace-tags.db"
+TAG_QUEUE_DEFAULT = "~/.hermes/mempalace-tag-queue"
 THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 
 SEARCH_SCHEMA = {
     "name": "memory_search",
-    "description": ("Semantic search across long-term research memory "
-                    "(all sessions, all time). Use for anything possibly "
-                    "discussed or discovered before."),
+    "description": ("Semantic + exact-tag search across long-term research "
+                    "memory (all sessions, all time). Use for anything "
+                    "possibly discussed or discovered before."),
     "parameters": {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "What to search for."},
             "top_k": {"type": "integer",
                       "description": "Max results (default 5, max 20)."},
+            "tags": {"type": "array", "items": {"type": "string"},
+                     "description": ("Optional exact tag filter (file paths, "
+                                     "flags, error strings, identifiers).")},
         },
         "required": ["query"],
     },
@@ -78,12 +91,14 @@ class MempalaceProvider(MemoryProvider):
     """Automatic archival memory over the local Letta + pgvector stack."""
 
     def __init__(self) -> None:
-        self._cfg: Dict[str, str] = {}
+        self._cfg: Dict[str, Any] = {}
         self._session_id = ""
         self._context = "primary"
         self._lock = threading.Lock()
         self._prefetch_cache: Dict[str, str] = {}   # query-hash -> block
         self._recent_hashes: List[str] = []          # dedup for sync_turn
+        self._tag_db = ""
+        self._tag_queue = ""
 
     # ------------------------------------------------------------- identity
 
@@ -102,8 +117,13 @@ class MempalaceProvider(MemoryProvider):
         self._cfg = json.load(open(CONFIG_PATH))
         self._session_id = session_id or "unknown"
         self._context = kwargs.get("agent_context", "primary") or "primary"
-        logger.info("mempalace: initialized (session=%s context=%s)",
-                    self._session_id, self._context)
+        tagger = self._cfg.get("tagger") or {}
+        if tagger.get("enabled", True):
+            self._tag_db = os.path.expanduser(tagger.get("db", TAG_DB_DEFAULT))
+            self._tag_queue = os.path.expanduser(
+                tagger.get("queue_dir", TAG_QUEUE_DEFAULT))
+        logger.info("mempalace: initialized (session=%s context=%s tag_db=%s)",
+                    self._session_id, self._context, self._tag_db or "off")
 
     def shutdown(self) -> None:
         pass  # writes are synchronous within the manager's background executor
@@ -122,13 +142,95 @@ class MempalaceProvider(MemoryProvider):
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8", "ignore"))
 
-    def _insert(self, text: str, tags: List[str]) -> None:
-        self._http("POST",
-                   f"/v1/agents/{self._cfg['agent_id']}/archival-memory",
-                   body={"text": text[:12000], "tags": tags})
+    def _insert(self, text: str, tags: List[str]) -> Optional[str]:
+        """Archive to Letta; returns the created passage id (or None)."""
+        out = self._http(
+            "POST", f"/v1/agents/{self._cfg['agent_id']}/archival-memory",
+            body={"text": text[:12000], "tags": tags})
+        try:
+            if isinstance(out, list) and out and isinstance(out[0], dict):
+                return out[0].get("id")
+            if isinstance(out, dict):
+                return out.get("id")
+        except Exception:
+            pass
+        return None
 
-    def _search(self, query: str, top_k: int = 5,
-                timeout: float = 8.0) -> List[str]:
+    def _enqueue_tag(self, item_id: Optional[str], text: str) -> None:
+        """Hand the archived item to the async tagger (atomic queue write)."""
+        if not self._tag_queue or not item_id:
+            return
+        try:
+            os.makedirs(self._tag_queue, exist_ok=True)
+            tmp = os.path.join(self._tag_queue, f".{item_id}.tmp")
+            with open(tmp, "w") as f:
+                json.dump({"item_id": item_id, "text": text}, f)
+            os.replace(tmp, os.path.join(self._tag_queue, f"{item_id}.json"))
+        except Exception as e:
+            logger.debug("mempalace: tag enqueue failed: %s", e)
+
+    def _archive(self, text: str, tags: List[str]) -> None:
+        self._enqueue_tag(self._insert(text, tags), text)
+
+    # ------------------------------------------------------------ retrieval
+
+    def _tag_search(self, query: str, top_k: int) -> List[str]:
+        """FTS over the verbatim tag index; returns verbatim item texts."""
+        if not self._tag_db or not os.path.exists(self._tag_db):
+            return []
+        toks = re.findall(r"[A-Za-z0-9_./-]{3,}", query)[:12]
+        if not toks:
+            return []
+        match = " OR ".join('"' + t.replace('"', '') + '"' for t in toks)
+        try:
+            db = sqlite3.connect(f"file:{self._tag_db}?mode=ro", uri=True,
+                                 timeout=1.0)
+            try:
+                rows = db.execute(
+                    "SELECT item_id, count(*) AS n FROM tags_fts "
+                    "WHERE tags_fts MATCH ? GROUP BY item_id "
+                    "ORDER BY n DESC LIMIT ?", (match, top_k)).fetchall()
+                out = []
+                for item_id, _n in rows:
+                    r = db.execute("SELECT text FROM items WHERE item_id=?",
+                                   (item_id,)).fetchone()
+                    if r and r[0]:
+                        out.append(r[0].strip()[:600])
+                return out
+            finally:
+                db.close()
+        except Exception as e:
+            logger.debug("mempalace: tag search failed (non-fatal): %s", e)
+            return []
+
+    def _tag_filter(self, tags: List[str], top_k: int) -> List[str]:
+        """Exact tag lookup (memory_search tool's tags param)."""
+        if not self._tag_db or not os.path.exists(self._tag_db) or not tags:
+            return []
+        try:
+            db = sqlite3.connect(f"file:{self._tag_db}?mode=ro", uri=True,
+                                 timeout=1.0)
+            try:
+                ph = ",".join("?" * len(tags))
+                rows = db.execute(
+                    f"SELECT t.item_id, count(*) AS n FROM tags t "
+                    f"WHERE t.tag IN ({ph}) GROUP BY t.item_id "
+                    f"ORDER BY n DESC LIMIT ?", (*tags, top_k)).fetchall()
+                out = []
+                for item_id, _n in rows:
+                    r = db.execute("SELECT text FROM items WHERE item_id=?",
+                                   (item_id,)).fetchone()
+                    if r and r[0]:
+                        out.append(r[0].strip()[:600])
+                return out
+            finally:
+                db.close()
+        except Exception as e:
+            logger.debug("mempalace: tag filter failed (non-fatal): %s", e)
+            return []
+
+    def _embed_search(self, query: str, top_k: int = 5,
+                      timeout: float = 8.0) -> List[str]:
         out = self._http(
             "GET",
             f"/v1/agents/{self._cfg['agent_id']}/archival-memory/search",
@@ -140,6 +242,30 @@ class MempalaceProvider(MemoryProvider):
             if t:
                 texts.append(t.strip()[:600])
         return texts
+
+    def _search(self, query: str, top_k: int = 5,
+                timeout: float = 8.0) -> List[str]:
+        """Two-leg retrieval: exact-tag hits first, embedding hits after.
+        Everything returned is verbatim archive text."""
+        tag_hits = self._tag_search(query, max(2, top_k // 2 + 1))
+        try:
+            emb_hits = self._embed_search(query, top_k, timeout)
+        except Exception as e:
+            logger.debug("mempalace: embed search failed: %s", e)
+            emb_hits = []
+        # embedding's best hit keeps rank 1 (it wins on semantic probes);
+        # tag hits follow so exact-identifier items always surface
+        ordered = emb_hits[:1] + tag_hits + emb_hits[1:]
+        merged, seen = [], set()
+        for t in ordered:
+            key = re.sub(r"\s+", " ", t[:160]).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(t)
+            if len(merged) >= top_k:
+                break
+        return merged
 
     # ------------------------------------------------------- auto-capture
 
@@ -157,7 +283,7 @@ class MempalaceProvider(MemoryProvider):
         sid = session_id or self._session_id
         stamp = time.strftime("%Y-%m-%d %H:%M")
         try:
-            self._insert(
+            self._archive(
                 f"[{stamp}] [session {sid}] [{self._context}]\n"
                 f"USER: {user}\nASSISTANT: {asst}",
                 tags=["auto-turn", f"sess:{sid}", f"ctx:{self._context}"])
@@ -185,7 +311,7 @@ class MempalaceProvider(MemoryProvider):
                 chunks.append("\n".join(chunk))
             stamp = time.strftime("%Y-%m-%d %H:%M")
             for i, c in enumerate(chunks[:40]):
-                self._insert(
+                self._archive(
                     f"[{stamp}] [session {self._session_id}] "
                     f"[pre-compression span {i + 1}/{len(chunks)}]\n{c}",
                     tags=["compress-span", f"sess:{self._session_id}"])
@@ -201,7 +327,7 @@ class MempalaceProvider(MemoryProvider):
     def on_delegation(self, task: str, result: str, **kwargs) -> None:
         try:
             stamp = time.strftime("%Y-%m-%d %H:%M")
-            self._insert(
+            self._archive(
                 f"[{stamp}] [session {self._session_id}] [subagent]\n"
                 f"TASK: {(task or '')[:3000]}\n"
                 f"RESULT: {_strip_think(result)[:8000]}",
@@ -215,7 +341,8 @@ class MempalaceProvider(MemoryProvider):
         return ("Long-term research memory (mempalace) is active: every "
                 "exchange is archived automatically and survives across "
                 "sessions. Relevant memories are auto-injected each turn; "
-                "call memory_search for deeper or targeted recall.")
+                "call memory_search for deeper or targeted recall (it also "
+                "matches exact identifiers: file paths, flags, error strings).")
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         q = (query or "").strip()
@@ -264,13 +391,19 @@ class MempalaceProvider(MemoryProvider):
                          **kwargs) -> str:
         try:
             if tool_name == "memory_search":
-                hits = self._search(str(args.get("query", "")),
-                                    top_k=min(int(args.get("top_k", 5)), 20))
+                top_k = min(int(args.get("top_k", 5)), 20)
+                tag_filter = [str(t) for t in (args.get("tags") or []) if t]
+                hits = self._tag_filter(tag_filter, top_k) if tag_filter else []
+                for h in self._search(str(args.get("query", "")), top_k=top_k):
+                    if len(hits) >= top_k:
+                        break
+                    if h not in hits:
+                        hits.append(h)
                 return "\n".join(f"- {h}" for h in hits) or "no matching memories"
             if tool_name == "memory_save":
                 tags = [str(t) for t in (args.get("tags") or [])]
-                self._insert(str(args.get("content", "")),
-                             tags=["explicit-save"] + tags)
+                self._archive(str(args.get("content", "")),
+                              tags=["explicit-save"] + tags)
                 return "saved to long-term memory"
             return f"unknown memory tool: {tool_name}"
         except Exception as e:

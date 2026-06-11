@@ -1,0 +1,7 @@
+ENTITIES: SYCL ; B70 ; ggml-sycl ; llama-bench ; Delta-Net
+METRICS: 714/714 tests passed ; 11502/11514 tests passed ; 5.5643 ±0.152 ; 5.5662 ±0.152 ; +4.7% ; +0–1%
+FILES: eval/upstream/test_matrix.sh ; bench-base.json ; bench-pr.json
+NUMBERS: 2026-06-10 ; d2462f8 ; f0156d1 ; 12 ; 30 chunks
+ERRORS: 12 actual failing tests ; summary FAIL lines
+DECISIONS: numerically sound in the retained targeted checks ; patch's gain does not survive scrutiny ; smoke test only
+TOPICS: validation ; correctness ; performance ; verdict ; token-generation

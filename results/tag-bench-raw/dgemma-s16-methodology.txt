@@ -1,0 +1,8 @@
+
+ENTITIES: Nex-N2-mini ; Intel Arc Pro B70 ; llama.cpp ; oneAPI
+METRICS: ~600 GB/s ; ~367 TOPS int8 ; 85.7 t/s ; 52.8 
+FILES: gguf-py/gguf/scripts/gguf_set_metadata.py ; NexN2.gguf
+NUMBERS: 32 GB ; 2.8 GHz ; 24.04 ; 2026.0 ; 414 
+ERRORS: NONE
+DECISIONS: the published GGUFs already have it applied
+TOPICS: Methodology ; Hardware ; Speed ; Correctness ; performance
