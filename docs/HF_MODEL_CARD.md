@@ -52,12 +52,14 @@ With the project's Turbo package on Arc Pro B70:
 | config | decode @ ctx0 | decode @ 131k |
 |---|---:|---:|
 | fresh stock control: reorder off / FA off | 68.8 t/s | 20.0 t/s |
-| **NexN2 B70 Turbo retained package** (MoE reorder + FA; retained NX2 fusions at ctx0) | **88.1 t/s** | **42.3 t/s** |
+| **NexN2 B70 Turbo Q5_K_M** (accuracy pick; MoE reorder + FA + retained NX2 fusions) | **88.1 t/s** | **42.3 t/s** |
+| **NexN2 B70 Turbo Q4_K_M** (speed pick; MoE reorder + retained NX2 fusions) | **93.5 t/s** | not remeasured |
 
 Q5_K_M/Q4_K_M decode updated 2026-06-12 with the Turbo patch chain's Q6_K MoE reorder
 (`patches/0003` in the GitHub repo). `patches/0004` adds default-on exact NX2
 fused gate/up SwiGLU, post-down weighted-sum fusion, and fused F32 MoE tail add
-(Q5_K_M ctx0 reaches 88.1 t/s in the retained default). The 131k table entry is
+(Q5_K_M ctx0 reaches 88.1 t/s in the retained default; Q4_K_M reaches 93.5 t/s
+on the release-card evidence). The 131k Q5_K_M table entry is
 a full-package measurement, not a fused-MoE-only attribution: the audited release
 gate measured `0004` at 42.0952 -> 42.3148 t/s (+0.52%) for Q5_K_M 131k. The
 large 20.0 -> 42.3 t/s 131k change is the overall Turbo deployment comparison

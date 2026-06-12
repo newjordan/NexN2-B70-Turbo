@@ -15,15 +15,17 @@ Canonical report: [`docs/lab-report.md`](docs/lab-report.md).
 | config | decode @ ctx0 |
 |---|---:|
 | fresh stock control: reorder off / FA off | 68.8 t/s |
-| **NexN2 B70 Turbo** (reorder + Flash-Attention + NX2 fused MoE) | **88.1 t/s** |
-| fresh reproducible gain | **+28%** |
+| **NexN2 B70 Turbo Q5_K_M** (accuracy pick) | **88.1 t/s** |
+| **NexN2 B70 Turbo Q4_K_M** (speed pick) | **93.5 t/s** |
+| fresh reproducible gain, Q5_K_M / Q4_K_M | **+28% / +36%** |
 
 2026-06-12: Turbo's reorder now also covers the **Q6_K** `ffn_down_exps` expert weights
 (patches `0002`/`0003`), lifting Q5_K_M from 81.7 to **85.8** t/s and Q4_K_M from 85.7 to
 **91.0** t/s at ctx0 ([`results/fabler-q6k-reorder/`](results/fabler-q6k-reorder/)).
 Patch `0004` now defaults on exact NX2 fused gate/up SwiGLU, post-down weighted
 expert sum, and a fused F32 MoE tail add; the retained Q5_K_M ctx0 path reaches
-**88.1** t/s with PPL unchanged and no retained 131k regression. The broader
+**88.1** t/s with PPL unchanged and no retained 131k regression, while the
+Q4_K_M speed pick is **93.5** t/s on the release-card evidence. The broader
 generic gate/up fusion variants remain opt-in profiling modes, including
 shared-expert dense gate/up, activation-Q8 cache, gate/up XOR reduction, vec4
 weighted-sum, local-weight weighted-sum, down-weighted-sum, atomic
