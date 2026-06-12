@@ -43,27 +43,22 @@ Code, kernel patch, full methodology, and reproducible benchmarks: **https://git
 | `Nex-N2-mini-B70-Turbo-Q3_K_S.gguf` | Q3_K_S | 14.1 GB | 3.50 | 0.1479 | 83.9% | 52.2 |
 | `mmproj-f16.gguf` | vision projector | 0.8 GB | — | — | — | — |
 
-**Recommendation: `Q5_K_M`** (best accuracy under the Q6_K reference, near-fastest) or **`Q4_K_M`** for max speed / more context headroom. On SYCL, Q4_K / Q5_K carry the optimized kernels and lead the decode column — they're the speed picks. Accuracy is KL-divergence + top-1 agreement vs a Q6_K reference (PPL 6.572, wikitext-2, 100 chunks). For vision, add `mmproj-f16.gguf`.
+**Recommendation: `Q5_K_M`** (best accuracy under the Q6_K reference, near-fastest) or **`Q4_K_M`** for max speed. On SYCL, Q4_K / Q5_K carry the optimized kernels and lead the decode column — they're the speed picks. Accuracy is KL-divergence + top-1 agreement vs a Q6_K reference (PPL 6.572, wikitext-2, 100 chunks). For vision, add `mmproj-f16.gguf`.
 
 ## Benchmarks (Intel Arc Pro B70, real measurements)
 
 With the project's Turbo package on Arc Pro B70:
 
-| config | decode @ ctx0 | decode @ 131k |
-|---|---:|---:|
-| fresh stock control: reorder off / FA off | 69.8 t/s | 20.1 t/s |
-| **NexN2 B70 Turbo** (reorder + FA) | **81.7 t/s** | **40.9 t/s** |
-
-An older retained CSV records stock ctx0 at 55.4 t/s, but its raw command/log
-was not retained; current reproducible ctx0 stock reruns are around 69.x t/s.
-
-Long context works end-to-end: needle-in-haystack 8/8 up to 120k tokens at every depth. Full tables (reorder × depth, FA × depth, NIAH) and the kernel patch are in the [GitHub repo](https://github.com/newjordan/NexN2-B70-Turbo).
+| config | decode @ ctx0 |
+|---|---:|
+| fresh stock control: reorder off / FA off | 69.8 t/s |
+| **NexN2 B70 Turbo** (reorder + FA) | **81.7 t/s** |
 
 ## Run it (llama.cpp)
 
 ```bash
 # build llama.cpp with the SYCL backend (oneAPI/icpx); see the GitHub repo for the Turbo kernel patch
-llama-server -m Nex-N2-mini-B70-Turbo-Q5_K_M.gguf -ngl 99 -fa on -c 131072 \
+llama-server -m Nex-N2-mini-B70-Turbo-Q5_K_M.gguf -ngl 99 -fa on \
   -ctk f16 -ctv f16 --jinja --host 127.0.0.1 --port 8090
 ```
 

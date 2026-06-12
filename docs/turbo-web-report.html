@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>NexN2 B70 Turbo Due-Diligence Report</title>
+    <title>NexN2 B70 Turbo Report</title>
     <style>
       :root {
         color-scheme: dark;
@@ -118,7 +118,7 @@
 
       .cards {
         display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 12px;
         margin: 22px 0 26px;
       }
@@ -329,62 +329,52 @@
       <aside>
         <div class="brand">
           <h1>NexN2 B70 Turbo</h1>
-          <p>Local due-diligence web report</p>
+          <p>Current local report</p>
         </div>
-        <div class="nav-title">Core</div>
+        <div class="nav-title">Report</div>
         <nav id="core-nav"></nav>
-        <div class="nav-title">Evidence</div>
+        <div class="nav-title">Package</div>
         <nav id="evidence-nav"></nav>
-        <div class="nav-title">Data</div>
+        <div class="nav-title">Inventory</div>
         <nav id="data-nav"></nav>
       </aside>
 
       <main>
         <div class="hero">
-          <h2>Turbo Validation And Packaging Report</h2>
+          <h2>Current B70 Package Report</h2>
           <p>
-            This page assembles the current committed due-diligence artifacts for
-            the model package and the llama.cpp SYCL backend contribution
-            candidate. It is served from the local repo and does not require
-            external assets.
+            This page keeps the public report to the current retained result,
+            model package, validation checks, and local package inventory. It is
+            served from the repo and does not require external assets.
           </p>
         </div>
 
         <div class="cards">
           <div class="card">
-            <div class="label">Fresh ctx0 control</div>
+            <div class="label">Current control</div>
             <div class="value">69.84 → 81.69</div>
-            <div class="note">tok/s, reproducible run</div>
+            <div class="note">ctx0 tok/s, retained run</div>
           </div>
           <div class="card">
-            <div class="label">Fresh 131k control</div>
-            <div class="value">20.10 → 40.88</div>
-            <div class="note">tok/s, +103%</div>
+            <div class="label">Targeted validation</div>
+            <div class="value">714 / 714</div>
+            <div class="note">MUL_MAT_ID vs CPU reference</div>
           </div>
           <div class="card">
-            <div class="label">Backend ops</div>
-            <div class="value">11502 / 11514</div>
-            <div class="note">same base/candidate failures</div>
-          </div>
-          <div class="card">
-            <div class="label">Ready patch</div>
-            <div class="value">b5994f6</div>
-            <div class="note">single-commit branch</div>
+            <div class="label">Turbo SYCL kernel</div>
+            <div class="value">a7597d7</div>
+            <div class="note">Q4_K/Q5_K MoE MUL_MAT_ID</div>
           </div>
         </div>
 
         <div class="status-grid">
           <div class="status ok">
-            <strong>Model package evidence retained</strong>
-            <span>Checksums, controls, frontier data, and model-card framing are committed.</span>
+            <strong>Model package retained</strong>
+            <span>Checksums, controls, frontier data, and model-card text are committed.</span>
           </div>
           <div class="status ok">
-            <strong>NX2 path proof retained</strong>
-            <span>Actual Q4/Q5 NX2 artifacts hit 3D expert MUL_MAT_ID on SYCL.</span>
-          </div>
-          <div class="status warn">
-            <strong>Historical 55.43 is not reproducible</strong>
-            <span>Kept as historical CSV-only data; fresh ctx0 stock controls land around 69.x.</span>
+            <strong>Validation retained</strong>
+            <span>Backend-op and perplexity checks support the SYCL MoE reorder path.</span>
           </div>
         </div>
 
@@ -398,73 +388,13 @@
           group: "core",
           title: "Canonical Lab Report",
           path: "lab-report.md",
-          note: "Main report and artifact index.",
+          note: "Current report and retained validation.",
         },
         {
-          group: "core",
-          title: "Project README",
-          path: "../README.md",
-          note: "Public-facing project summary.",
-        },
-        {
-          group: "core",
-          title: "Methodology",
-          path: "methodology.md",
-          note: "Measurement and correctness methodology.",
-        },
-        {
-          group: "core",
+          group: "evidence",
           title: "HF Model Card",
           path: "HF_MODEL_CARD.md",
           note: "Model package presentation.",
-        },
-        {
-          group: "core",
-          title: "Turbo Understanding",
-          path: "turbo-understanding.md",
-          note: "Technical explanation for review.",
-        },
-        {
-          group: "core",
-          title: "Packaging Checklist",
-          path: "packaging-checklist.md",
-          note: "What belongs in the report package.",
-        },
-        {
-          group: "evidence",
-          title: "SYCL Readiness Notes",
-          path: "upstream-sycl-readiness.md",
-          note: "llama.cpp contribution readiness notes.",
-        },
-        {
-          group: "evidence",
-          title: "Backend Validation Summary",
-          path: "../results/upstream-pr/SUMMARY.md",
-          note: "Base/candidate backend-op and PPL summary.",
-        },
-        {
-          group: "evidence",
-          title: "Patch README",
-          path: "../patches/README.md",
-          note: "Patch application and build notes.",
-        },
-        {
-          group: "evidence",
-          title: "Micro-MoE Fixture",
-          path: "../results/micro-moe/README.md",
-          note: "Smaller reproducible MoE smoke fixture.",
-        },
-        {
-          group: "evidence",
-          title: "First-Token Timing",
-          path: "../results/nx2-first-token/README.md",
-          note: "Load / first-token / steady-state timing.",
-        },
-        {
-          group: "evidence",
-          title: "Ctx0 Harness Check",
-          path: "../results/nx2-controls/ctx0-harness-check-20260610T231352Z/README.md",
-          note: "Historical 55.43 investigation.",
         },
         {
           group: "data",
@@ -472,27 +402,6 @@
           path: "../results/model-checksums.sha256",
           note: "SHA256 package inventory.",
           raw: true,
-        },
-        {
-          group: "data",
-          title: "Fresh NX2 First-Token Timeline",
-          path: "../results/nx2-first-token/20260610T230504Z/timeline.csv",
-          note: "Raw first-token timing CSV.",
-          csv: true,
-        },
-        {
-          group: "data",
-          title: "Fresh NX2 Control JSON Summary",
-          path: "../results/nx2-controls/20260610T220943Z/stock-ctx0-reorder-off-fa-off.json",
-          note: "One retained control artifact.",
-          raw: true,
-        },
-        {
-          group: "data",
-          title: "Long Context FA CSV",
-          path: "../results/longctx-fa.csv",
-          note: "Historical/depth context data.",
-          csv: true,
         },
       ];
 

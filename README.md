@@ -6,25 +6,19 @@
 
 **The fastest + most accurate _local_ deployment of [Nex-N2-mini](https://huggingface.co/nex-agi/Nex-N2-mini) on the Intel Arc Pro B70 (Battlemage)** — every number measured on the real model and the real card.
 
-NexN2 is a **Qwen3.5-35B-A3B Mixture-of-Experts** reasoning model (35B total / ~3B active per token, 256 experts / 8 active, multimodal). **"Turbo"** is the full B70 deployment package: corrected GGUF artifacts, imatrix quant selection, the SYCL MoE reorder path, Flash-Attention serving, and retained long-context validation.
+NexN2 is a **Qwen3.5-35B-A3B Mixture-of-Experts** reasoning model (35B total / ~3B active per token, 256 experts / 8 active, multimodal). **"Turbo"** is the full B70 deployment package: corrected GGUF artifacts, imatrix quant selection, the SYCL MoE reorder path, Flash-Attention serving, and retained validation.
 
 Canonical report: [`docs/lab-report.md`](docs/lab-report.md).
 
 ## Headline
 
-| config | decode @ ctx0 | decode @ 131k |
-|---|---:|---:|
-| fresh stock control: reorder off / FA off | 69.8 t/s | 20.1 t/s |
-| **NexN2 B70 Turbo** (reorder + Flash-Attention) | **81.7 t/s** | **40.9 t/s** |
-| fresh reproducible gain | **+17%** | **+103% (2.03×)** |
-
-Historical retained CSV data also contains an older stock ctx0 value of 55.4
-t/s, but the original raw command/log was not retained and current reruns land
-around 69.x t/s. The deep-context result is stable.
+| config | decode @ ctx0 |
+|---|---:|
+| fresh stock control: reorder off / FA off | 69.8 t/s |
+| **NexN2 B70 Turbo** (reorder + Flash-Attention) | **81.7 t/s** |
+| fresh reproducible gain | **+17%** |
 
 - **Turbo kernel path:** targeted `MUL_MAT_ID` op tests pass (714/714) and PPL is unchanged on the retained NX2 checks.
-- **Flash-Attention:** +94% decode at 131k. Reorder owns short context, FA owns deep context — together they cover the whole window.
-- **Long context works end-to-end:** 8/8 needle-in-haystack retrieval up to 120k tokens at every depth.
 - Serves an **OpenAI-compatible** endpoint — drop-in for [opencode](serving/opencode.json) and [Hermes Agent](serving/hermes.md).
 
 ## The Pareto frontier (accuracy × speed)
@@ -41,7 +35,7 @@ Accuracy = KL-divergence + top-1 agreement of each quant's logits vs a **Q6_K re
 | Q3_K_M | 15.6 GB | 3.87 | 0.1048 | 86.3% | 62.1 | 874 |
 | Q3_K_S | 14.1 GB | 3.50 | 0.1479 | 83.9% | 52.2 | 819 |
 
-**Q5_K_M** is the all-rounder (best accuracy under Q6, near-fastest, ~9 GB free for context). **Q4_K_M** for max speed and more context headroom.
+**Q5_K_M** is the all-rounder: best accuracy under Q6 and near-fastest decode. **Q4_K_M** is the max-speed option.
 
 **The design follows two measured facts:**
 1. **Speed comes from better kernels.** Q4_K/Q5_K use the optimized reorder-capable kernels: Q4_K_M (4.88 bpw) decodes at 85.7 t/s, ahead of the lower-bit IQ4_XS (4.32 bpw) at 52.8. The lever is the kernel — so that's where Turbo invests.
@@ -60,31 +54,14 @@ Clean A/B (`llama-bench`, reorder ON vs OFF) — [`results/longctx-reorder.csv`]
 | 16384 | 55.65 → 62.59 | +12.5% | 58.28 → 65.26 | +12.0% |
 | 32768 | 46.21 → 51.01 | +10.4% | 47.94 → 52.63 | +9.8% |
 
-The reorder win is largest at short context; Flash-Attention carries the win at depth (next section). **Zero accuracy cost in retained checks:** `test-backend-ops` MUL_MAT_ID passes 714/714 vs the CPU reference and perplexity is unchanged (5.5643 vs 5.5662 ±0.15).
+The retained checks show zero accuracy cost: `test-backend-ops` MUL_MAT_ID passes 714/714 vs the CPU reference and perplexity is unchanged (5.5643 vs 5.5662 ±0.15).
 
-The llama.cpp backend-candidate audit in [`results/upstream-pr/SUMMARY.md`](results/upstream-pr/SUMMARY.md) is separate from this project benchmark. It exists to check a reusable backend contribution candidate; it is not the headline measurement of the NX2 GGUF variants.
-
-## Long context: Flash-Attention + a tiny KV
-
-NexN2 is a **hybrid** model — 10 of 40 layers are full attention (`full_attention_interval=4`); the rest are Gated Delta Net (linear). KV grows at just **20 KiB/token**, so even the full 262144 context is ~5 GiB — weights dominate VRAM.
-
-FA decode by depth (Q5_K_M, f16 KV, reorder on) — [`results/longctx-fa.csv`](results/longctx-fa.csv):
-
-| depth | FA off | FA on | gain |
-|---|---:|---:|---:|
-| 0 | 82.71 | 81.26 | −1.8% |
-| 32768 | 50.97 | 64.57 | +26.7% |
-| 131072 | 21.07 | 40.95 | **+94.3%** |
-| 262144 | — | 26.80 | fits in 32 GB (f16 KV) |
-
-- **f16 KV** is the recommended setting — it holds full decode speed at depth.
-- **Prefill is the gating cost at extreme depth:** cold-prefilling 262k tokens takes ~19 min (O(n²) attention). Prompt cache amortizes it for agents — a 2-turn test reused 1303 cached prefix tokens and re-prefilled only the 523-token delta.
-- **Verified retrieval:** needle-in-haystack **8/8** up to 120k tokens at every depth, including 90% depth near the 131072 serving limit — [`results/niah.csv`](results/niah.csv).
+The llama.cpp backend contribution audit in [`results/upstream-pr/SUMMARY.md`](results/upstream-pr/SUMMARY.md) is validation detail for a reusable SYCL MoE reorder component. Turbo remains the full deployment, model artifact, runtime, and validation package measured on the NX2 GGUF variants.
 
 ## Serve it
 
 ```bash
-./serving/llama-server.sh   # Q5_K_M + FA + 131072 ctx + f16 KV on 127.0.0.1:8090 (OpenAI-compatible)
+./serving/llama-server.sh   # Q5_K_M + FA + f16 KV on 127.0.0.1:8090 (OpenAI-compatible)
 ```
 
 Point any OpenAI client at `http://127.0.0.1:8090/v1`:
@@ -97,7 +74,7 @@ NexN2 is a **reasoning model** — it emits a `<think>` trace first, so give it 
 
 ```bash
 git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp
-git checkout d2462f8
+git checkout ac4cddeb0
 git am /path/to/NexN2-B70-Turbo/patches/0001-*.patch
 cmake -B build -DGGML_SYCL=ON -DGGML_SYCL_F16=ON -DCMAKE_CXX_COMPILER=icpx
 cmake --build build -j
@@ -106,18 +83,18 @@ cmake --build build -j
 ## Reproduce the frontier
 
 ```bash
-./scripts/nx2-phase1-sweep.sh   # quantize candidates, measure KLD/PPL + t/s -> results/frontier.csv
+./scripts/nx2-phase1-sweep.sh   # quantize variants, measure KLD/PPL + t/s -> results/frontier.csv
 ```
 
 See [`docs/methodology.md`](docs/methodology.md) for the ground-truth setup: bf16 → GGUF convert, the MTP/NextN metadata setting, the Q6_K reference, and the imatrix.
 
 ## Layout
 - `patches/` — the reorder-on-MoE kernel (the "Turbo")
-- `results/` — measured benchmarks (frontier, reorder × depth, FA × depth, needle-in-haystack, long-context Pareto, memory bakeoff)
+- `results/` — measured benchmarks (frontier, reorder-depth controls, serving controls, memory bakeoff)
 - `serving/` — `llama-server` launcher + opencode / Hermes provider configs
 - `scripts/` — the quant-sweep + measurement scripts
 - `docs/` — lab report, methodology, the MTP load setting, hardware notes
-- `eval/` — measurement harnesses: `niah/` (cache-smart multi-needle context sweep + serve/sweep runners), `memory/` (memory-substrate bakeoff), `upstream/` (A/B validation matrix for the Turbo patch vs upstream master)
+- `eval/` — measurement harnesses: `memory/` (memory-substrate bakeoff), `upstream/` (A/B validation matrix for the Turbo patch vs upstream master), and retained experimental runners
 - `mempalace/` — rolling research memory substrates: `lean/` (files + FTS5 + local embeddings + MemGPT-style controller) and `letta/` (Letta against local endpoints)
 
 ---

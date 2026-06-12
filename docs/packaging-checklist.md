@@ -40,6 +40,6 @@ Turbo lab-report cleanup.
 - `/home/frosty40/llama.cpp-sycl-moe-clean`: traceable cleanup branch with
   intermediate commits.
 - `/home/frosty40/llama.cpp-sycl-moe-ready`: single-commit contribution-ready
-  patch branch at `b5994f6`.
+  patch branch at `a7597d733`.
 - `/home/frosty40/llama.cpp`: left on `iq3-b70`; do not treat it as the clean
   contribution branch.

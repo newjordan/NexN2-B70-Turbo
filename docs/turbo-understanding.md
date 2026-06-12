@@ -10,24 +10,24 @@ text.
 1. The project-level NX2 work: GGUF conversion, imatrix quantization, metadata
    fixes, serving profile, validation, and B70 measurements for the
    Nex-N2-mini-derived `NX2-Q4_K_M.gguf` and `NX2-Q5_K_M.gguf` variants.
-2. A reusable llama.cpp SYCL backend contribution candidate for quantized MoE
+2. A reusable llama.cpp SYCL backend contribution branch for quantized MoE
    expert matmuls. This code extends an existing SYCL optimization called
    weight reorder so it can also be used by the fused MoE `MUL_MAT_ID` fast
    path for Q4_K and Q5_K expert weights.
 
 The project-level benchmark is the important headline: the NX2 GGUF variants
 run around 80-86 tok/s decode on the Intel Arc Pro B70 in the retained
-measurements. The backend-candidate audit is only for deciding what can be
+measurements. The backend contribution audit is only for deciding what can be
 claimed about the reusable llama.cpp code contribution.
 
-The backend contribution candidate changes four llama.cpp files:
+The backend contribution branch changes four llama.cpp files:
 
 - `ggml/src/ggml-sycl/ggml-sycl.cpp`
 - `ggml/src/ggml-sycl/mmvq.cpp`
 - `ggml/src/ggml-sycl/mmvq.hpp`
 - `ggml/src/ggml-sycl/dmmv.cpp`
 
-The ready candidate branch is `sycl-moe-reorder-ready` in
+The ready branch is `sycl-moe-reorder-ready` in
 `/home/frosty40/llama.cpp-sycl-moe-ready`. The cleanup history remains in
 `/home/frosty40/llama.cpp-sycl-moe-clean`.
 
@@ -262,8 +262,8 @@ If you are explaining this as the patch author, the honest claim is:
    quantization and the reordered MoE kernel when the expert weights have been
    reordered.
 
-Do not claim the patch itself gives +16% to +18% decode. The retained evidence
-does not support that as an incremental patch result.
+The retained evidence does not attribute +16% to +18% decode to the patch
+alone as an incremental patch result.
 
 ## Retained Evidence
 
@@ -276,13 +276,9 @@ Supported by retained artifacts:
   the retained NX2 Q4_K_M / Q5_K_M measurements.
 - Fresh reproducible project-level control data is in
   `results/nx2-controls/20260610T220943Z/` for Q5_K_M:
-  - stock control, reorder off / FA off: 69.84 tok/s at ctx0, 20.10 tok/s at 131k
-  - deployed Turbo + FA: 81.69 tok/s at ctx0, 40.88 tok/s at 131k
-  - this reproducible comparison is +17% at ctx0 and +103% at 131k
-- Historical retained CSV data in `results/longctx-fa.csv` records 55.43 tok/s
-  stock ctx0 and 81.26 tok/s deployed ctx0, but the original raw command/log was
-  not retained. `results/nx2-controls/ctx0-harness-check-20260610T231352Z/`
-  measured 69.49 to 69.76 across `-n 32`, `-n 64`, and `-n 128`.
+  - stock control, reorder off / FA off: 69.84 tok/s at ctx0
+  - deployed Turbo + FA: 81.69 tok/s at ctx0
+  - this reproducible comparison is +17% at ctx0
 - A smaller MoE smoke fixture has been identified for upstream-style repro:
   `Phi-mini-MoE-instruct-Q4_K_M.gguf` (`phimoe 16x3.8B Q4_K - Medium`). It
   loads on the clean SYCL branch and reaches 3D Q4_K expert `MUL_MAT_ID` calls;
@@ -291,10 +287,10 @@ Supported by retained artifacts:
   `results/nx2-path-debug/20260610T223353Z/`; both actual NX2 artifacts reach
   3D expert `MUL_MAT_ID` calls on SYCL.
 - Model package checksums are retained in `results/model-checksums.sha256`.
-- Ready candidate branch is one commit over `d2462f8`.
+- Ready branch is one commit over `ac4cddeb0`.
 - `git diff --check` is clean.
 - Targeted `test-backend-ops test -o MUL_MAT_ID`: 714/714 passed.
-- Full backend-op logs are retained for both unpatched base and candidate:
+- Full backend-op logs are retained for both unpatched base and validated branch:
   11502/11514 passed in both, with the same 12 `GET_ROWS` failures.
 - First-token timing is retained in `results/nx2-first-token/20260610T230504Z/`;
   this Q5_K_M control did not show a first-token lazy-reorder penalty under the
@@ -306,12 +302,7 @@ Supported by retained artifacts:
 Open audit items, kept separate from the project benchmark:
 
 - Use `test-backend-ops` and PPL as correctness evidence for the reorder path;
-  do not rely on retained FA-on greedy text as primary evidence.
-- Do not describe `40 tok/s` as an old baseline without evidence. In the retained
-  project data, `40.95 tok/s` is the deployed Q5_K_M result at 131k context; the
-  matching stock control at that depth is 19.99 tok/s.
-- Do not use 55.43 tok/s as the reproducible ctx0 stock control unless the
-  original raw command/log is recovered; current reruns land around 69.x tok/s.
+  retained FA-on greedy text is secondary context.
 - Rerun server-flow or kernel-level perf numbers before using them in any
   public-facing material.
 
@@ -326,7 +317,7 @@ Open audit items, kept separate from the project benchmark:
    high-bit plane (`qh`).
 5. Why every fallback matters: once weights are reordered in-place, any reader
    that assumes original `block_q*_K` layout will compute garbage.
-6. Why project-level and contribution-candidate claims are separate: the NX2 GGUF
+6. Why project-level and backend-contribution claims are separate: the NX2 GGUF
    variants are the benchmarked product, while the SYCL patch audit answers only
    what that one code contribution adds on top of a control build.
 
@@ -338,7 +329,7 @@ Open audit items, kept separate from the project benchmark:
 - Is the retained first-token optimization-path timing acceptable to SYCL
   maintainers?
 - Does this affect non-MoE Q4_K/Q5_K dense paths?
-- Is this worth upstreaming as a small correctness/coverage patch even if the
+- Is this worth upstreaming as a focused correctness/coverage change even if the
   main NX2 project result comes from the model artifacts and serving stack?
 
 ## Next Best Learning Exercise

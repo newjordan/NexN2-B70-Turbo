@@ -25,6 +25,5 @@ Median timing from `timeline.csv`:
 | Turbo steady, reorder on | 22.59 s | 0.94 s | 1.87 s / 128 |
 
 Interpretation: this control did not show a first-token lazy-reorder penalty on
-Q5_K_M under the measured settings. Treat it as a whole optimization-path
-control (`GGML_SYCL_DISABLE_OPT` off/on), not isolated attribution to one code
-line.
+Q5_K_M under the measured settings. It is a whole optimization-path control
+(`GGML_SYCL_DISABLE_OPT` off/on), not isolated attribution to one code line.

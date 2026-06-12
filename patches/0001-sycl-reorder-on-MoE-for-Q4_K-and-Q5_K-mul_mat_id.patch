@@ -1,4 +1,4 @@
-From b5994f64ad8380d246d58d794d90bdbdccb34fdc Mon Sep 17 00:00:00 2001
+From a7597d7335ddff6a67481c956a13d46ba4e66ff3 Mon Sep 17 00:00:00 2001
 From: newjordan <newjordan@gmail.com>
 Date: Wed, 10 Jun 2026 17:43:50 -0500
 Subject: [PATCH] sycl: support reordered Q4_K and Q5_K MoE MUL_MAT_ID
@@ -12,7 +12,7 @@ Extend reordered-weight handling to fused MoE MUL_MAT_ID for Q4_K and Q5_K exper
  4 files changed, 409 insertions(+), 10 deletions(-)
 
 diff --git a/ggml/src/ggml-sycl/dmmv.cpp b/ggml/src/ggml-sycl/dmmv.cpp
-index d80b0a3..e6d294f 100644
+index d80b0a382..e6d294f9a 100644
 --- a/ggml/src/ggml-sycl/dmmv.cpp
 +++ b/ggml/src/ggml-sycl/dmmv.cpp
 @@ -1041,6 +1041,120 @@ static void dequantize_mul_mat_vec_q5_k(const void *__restrict__ vx,
@@ -171,7 +171,7 @@ index d80b0a3..e6d294f 100644
          case GGML_TYPE_Q6_K:
              if ((ggml_tensor_extra_gpu *) dst->src[0]->extra &&
 diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
-index 3f246e8..fc98fcc 100644
+index 3f246e867..fc98fcc2b 100644
 --- a/ggml/src/ggml-sycl/ggml-sycl.cpp
 +++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
 @@ -3793,6 +3793,100 @@ static bool reorder_qw_q4_k(uint8_t * data_device, size_t size, size_t offset, d
@@ -382,7 +382,7 @@ index 3f246e8..fc98fcc 100644
          src0->type, src0->data, src1_ddq, (const int32_t *) ids->data,
          (float *) dst->data, (int) ne10, nrows, n_experts_used,
 diff --git a/ggml/src/ggml-sycl/mmvq.cpp b/ggml/src/ggml-sycl/mmvq.cpp
-index cf2b595..6ad69d2 100644
+index cf2b59576..6ad69d226 100644
 --- a/ggml/src/ggml-sycl/mmvq.cpp
 +++ b/ggml/src/ggml-sycl/mmvq.cpp
 @@ -2472,3 +2472,113 @@ bool ggml_sycl_mul_mat_vec_q_id(
@@ -500,7 +500,7 @@ index cf2b595..6ad69d2 100644
 +    }
 +}
 diff --git a/ggml/src/ggml-sycl/mmvq.hpp b/ggml/src/ggml-sycl/mmvq.hpp
-index d674dc1..c5d70bd 100644
+index d674dc1d6..c5d70bd0e 100644
 --- a/ggml/src/ggml-sycl/mmvq.hpp
 +++ b/ggml/src/ggml-sycl/mmvq.hpp
 @@ -40,4 +40,21 @@ bool ggml_sycl_mul_mat_vec_q_id(

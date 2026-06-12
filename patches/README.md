@@ -1,14 +1,15 @@
 # llama.cpp SYCL backend patch
 
-Reproducible patch generated against ggml-org/llama.cpp base commit `d2462f8`
-(`chat: fix LFM2/LFM2.5 ignoring json_schema`, ggml-org/llama.cpp #24377).
+Reproducible patch generated against ggml-org/llama.cpp base commit `ac4cddeb0`
+(`vendor : update LibreSSL to 4.3.2`, ggml-org/llama.cpp #24397).
 The backend change was developed and validated locally for the Intel Arc Pro B70.
+Upstream PR: https://github.com/ggml-org/llama.cpp/pull/24452
 
 Apply on a clean checkout at the pinned base:
 
 ```bash
 git clone https://github.com/ggml-org/llama.cpp
-cd llama.cpp && git checkout d2462f8
+cd llama.cpp && git checkout ac4cddeb0
 git am /path/to/NexN2-B70-Turbo/patches/0001-*.patch
 ```
 
