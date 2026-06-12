@@ -1,0 +1,3672 @@
+From ebefdff87bc43664fb48524d224019a1c260dc42 Mon Sep 17 00:00:00 2001
+From: newjordan <newjordan@gmail.com>
+Date: Fri, 12 Jun 2026 03:55:00 -0500
+Subject: [PATCH] sycl: specialize NX2 MoE gate/up, weighted sum, and tail add
+
+Add a default-on exact NX2 fused gate/up SwiGLU path for reordered Q4_K/Q5_K MoE expert GEMV. The default mode fuses only the NX2 ncols=2048, nrows=512, top-k 8 shape: quantize the shared activation row once, compute gate and up dots in one specialized kernel, apply SwiGLU in-kernel, and write the GLU output directly. The retained NX2 reducer uses sycl::reduce_over_group; XOR, alternate SwiGLU activation modes, rowpack scheduling, activation-Q8 caching, expert-pack scheduling, dual-dot vecdot, and Q8 handoff are available only as profiling modes because they measured slower, reversed under repeat, or were too noisy to promote.
+
+Also fuse the exact NX2 post-down weighted expert sum. The graph pass recognizes the F32 [2048,8] down output multiplied by normalized top-k weights and the following seven-add reduction, then writes ffn_moe_out directly in one kernel. The default scalar weighted-sum mode is retained; vec4 row-pack and local-weight variants are present only as explicit profiling modes because they measured slower.
+
+Add a default-on F32 MoE tail-add fusion for the following two-add chain: ffn_moe_out + ffn_moe_shexp, then + ffn_inp. The matcher is shape- and use-count-gated to contiguous NX2 [2048] F32 vectors. Scalar tail-add mode 1 remains default; a vec4 tail-add mode 2 is kept as an opt-in profiling path because the measured result was noisy and not promotion-worthy.
+
+Keep broader direct fusion and shared-Q8 experiments available as explicit profiling modes behind GGML_SYCL_ENABLE_MOE_GATE_UP_FUSION. Mode 3 is the default narrow NX2 path, mode 1 is broad direct fusion, mode 2 is shared-Q8 without direct GLU output, and mode 0 disables gate/up fusion. The weighted-sum, down-weighted-sum, tail-add, and RMS_NORM+MUL fusions have their own gates.
+
+Add separate opt-in probes for shared-expert dense gate/up SwiGLU, activation-Q8 reuse for that shared-expert path, shared-gate-tail scalar, vec4, and local-gate broadcast, shared-gate-sigmoid-tail scalar and vec4, exact Q6_K down projection specialization, Q6_K down-plus-weighted-sum serial/atomic/local-reduce variants, weighted-sum-plus-tail, tail-add+RMS_NORM, standalone RMS_NORM+MUL, post-norm Q8 handoff into MoE gate/up, selective post-norm Q8 handoff, MoE fusion dispatch guarding, alternate gate/up SwiGLU activation lowering, gate/up rowpack scheduling modes 5/6/7, gate/up local-Q8 activation caching, gate/up expert-pack scheduling modes 9/10, gate/up dual-dot vecdot mode 11, gate/up Q8 handoff into the following Q6_K down projection, and weighted-sum local weight caching. They are disabled by default because the retained Q5_K_M ctx0 A/Bs are slower than the default path, below the +2% promotion bar, reversed under repeat, or too noisy to promote.
+
+Validation on Arc Pro B70: targeted MUL_MAT_ID backend-op testing passes 690/690, Q5_K_M ctx0 decode improves from 85.04 to 88.08 t/s (+3.57%) under the retained default, Q4_K_M ctx0 reaches 93.49 t/s, Q5_K_M 131k reaches 42.29 t/s, and Q5_K_M 30-chunk PPL is unchanged at 5.5642 +/- 0.15223. Full backend-op testing retains the known 12 GET_ROWS failures. The default-off shared-expert dense gate/up probe measured 87.27 t/s off versus 86.90 t/s on; activation-Q8 cache for the shared-expert path passed targeted tests but measured 87.76 t/s cache-on versus 88.14 t/s cache-off, then 87.43 versus 87.85 in reverse; the opt-in gate/up XOR reducer measured 87.81 t/s versus 87.96 t/s for the retained reducer; gate/up activation mode 3 measured 87.74 t/s versus 88.06 t/s, and mode 4 measured 87.76 t/s versus a noisy 87.88 t/s retained repeat; gate/up rowpack mode 5 measured 87.70 t/s versus 88.10 t/s for retained mode 1; rowpack modes 6 and 7 passed targeted tests, but mode 6 lost to mode 1 in the reversed Q5 repeat (87.46 versus 87.72 t/s) and Q4 guard (93.53 versus 93.80 t/s), while mode 7 measured 87.64 t/s in the noisy first Q5 pass; gate/up local-Q8 mode 8 passed targeted tests but tied retained mode on Q5_K_M across a reversed repeat (88.20 versus 88.17, then 87.67 versus 87.67 t/s) and regressed Q4_K_M (90.08 versus 93.91 t/s); gate/up expert-pack modes 9 and 10 passed targeted tests, but mode 9 stayed below the Q5_K_M +2% promotion bar across a reversed repeat (88.09 versus 86.83, then 87.13 versus 87.00 t/s), mode 10 trailed at 87.39 t/s, and Q4_K_M mode 9 measured 93.87 versus 92.75 t/s retained; gate/up dual-dot vecdot mode 11 passed targeted tests, but only tied retained Q5_K_M after a reversed repeat (87.59 versus 87.07, then 87.30 versus 87.29 t/s) and regressed Q4_K_M (92.76 versus 94.15 t/s); gate/up Q8 handoff measured 88.02 t/s on versus 87.93 off, then 87.34 on versus 87.56 off in a reversed repeat; exact Q6_K down specialization measured 87.62 t/s versus 87.84 t/s off; Q8 handoff plus exact Q6_K down measured 87.51 t/s versus 87.68 t/s for the retained default; down-weighted-sum mode 1 measured 87.85 t/s versus 87.98 t/s off; atomic mode 2 measured 87.68 t/s versus 88.17 off; local-reduce mode 3 passed targeted tests but measured 87.68 t/s versus 87.99 t/s off; shared-gate-tail scalar measured 88.16 t/s on versus 87.81 off, then 87.83 on versus 87.67 off, with Q4_K_M at 94.22 on versus 92.64 off; shared-gate-tail vec4 measured 87.88 t/s on versus 87.07 off, then 87.80 on versus 87.22 off, with Q4_K_M at 94.43 on versus 92.00 off; shared-gate-tail local-gate broadcast modes 5 and 6 passed targeted tests but measured 87.65 and 87.55 t/s versus 87.81 t/s for the same-run retained default; shared-gate-sigmoid-tail vec4 measured 88.15 t/s on versus 87.18 off, then 87.47 on versus 87.82 off, with Q4_K_M at 94.52 on versus 92.75 off; the opt-in vec4 weighted-sum probe measured 87.91 t/s versus 88.08 t/s for scalar/default; the opt-in local-weight weighted-sum probe measured 87.60 t/s versus 88.06 t/s for scalar/default; the default-off weighted-tail probe measured 87.74 t/s versus 87.98 t/s off; the default-off dispatch guard measured 87.78 t/s versus 88.09 t/s off; tail-add vec4 was noisy enough to keep scalar tail-add as default; tail-add+RMS_NORM measured 86.37 t/s versus 87.95/87.57 off on Q5_K_M while Q4_K_M improved in the single guard pair (92.77 on versus 91.78 off); standalone RMS_NORM+MUL mode 2 measured 89.15/88.97 t/s versus 88.05/87.84 off on Q5_K_M and 95.77 versus 91.28 off on Q4_K_M, with RMS_NORM 21/21, MUL_MAT_ID 690/690, and 5-chunk Q5_K_M WikiText flat at 5.1289 off versus 5.1329 on; and post-norm Q8 handoff mode 3 measured 88.77 t/s versus 87.56 off on Q5_K_M and 95.80 versus 92.37 off on Q4_K_M, with RMS_NORM 21/21, MUL_MAT_ID 690/690, and 5-chunk Q5_K_M WikiText at 5.1402, but remains default-off because Q5_K_M stayed below the +2% promotion bar and trailed standalone mode 2; selective post-norm Q8 handoff mode 4 passed RMS_NORM 21/21 and MUL_MAT_ID 690/690 but measured 87.58/87.48 t/s on Q5_K_M versus 89.01 t/s for same-run mode 2, with Q4_K_M at 94.32 t/s.
+---
+ ggml/src/ggml-sycl/common.hpp    |   16 +
+ ggml/src/ggml-sycl/ggml-sycl.cpp | 1820 +++++++++++++++++++++++++++++-
+ ggml/src/ggml-sycl/mmvq.cpp      | 1407 ++++++++++++++++++++++-
+ ggml/src/ggml-sycl/mmvq.hpp      |   88 ++
+ ggml/src/ggml-sycl/vecdotq.hpp   |  184 +++
+ 5 files changed, 3485 insertions(+), 30 deletions(-)
+
+diff --git a/ggml/src/ggml-sycl/common.hpp b/ggml/src/ggml-sycl/common.hpp
+index d8bb3638d..78c7606b6 100644
+--- a/ggml/src/ggml-sycl/common.hpp
++++ b/ggml/src/ggml-sycl/common.hpp
+@@ -61,6 +61,10 @@ void ggml_sycl_host_free(void* ptr);
+ extern int g_ggml_sycl_debug;
+ extern int g_ggml_sycl_disable_optimize;
+ extern int g_ggml_sycl_prioritize_dmmv;
++extern int g_ggml_sycl_enable_moe_nx2_specialize;
++extern int g_ggml_sycl_enable_moe_shared_gate_up_fusion;
++extern int g_ggml_sycl_enable_moe_gate_up_q8_handoff;
++extern int g_ggml_sycl_enable_moe_q6_down_nx2_specialize;
+ extern int g_ggml_sycl_enable_flash_attention;
+
+
+@@ -414,6 +418,18 @@ struct ggml_backend_sycl_context {
+     // pool
+     std::unique_ptr<ggml_sycl_pool> pools[GGML_SYCL_MAX_DEVICES];
+     std::unordered_map<sycl::queue *, std::unique_ptr<ggml_sycl_pool_alloc<uint8_t>>> scratchpad_map;
++    std::unique_ptr<ggml_sycl_pool_alloc<char>> moe_gate_up_q8_alloc;
++    const ggml_tensor * moe_gate_up_q8_src = nullptr;
++    char * moe_gate_up_q8 = nullptr;
++    size_t moe_gate_up_q8_size = 0;
++    size_t moe_gate_up_q8_row_stride = 0;
++    std::unique_ptr<ggml_sycl_pool_alloc<char>> moe_act_q8_alloc;
++    const ggml_tensor * moe_act_q8_src = nullptr;
++    char * moe_act_q8 = nullptr;
++    size_t moe_act_q8_size = 0;
++    size_t moe_act_q8_row_stride = 0;
++    int64_t moe_act_q8_ne0 = 0;
++    int64_t moe_act_q8_ne1 = 0;
+
+     std::unique_ptr<ggml_sycl_fattn_kv_buffers> fattn_bufs[GGML_SYCL_MAX_DEVICES];
+
+diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
+index b9a0080c8..6c06a49aa 100644
+--- a/ggml/src/ggml-sycl/ggml-sycl.cpp
++++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
+@@ -78,6 +78,20 @@ int g_ggml_sycl_disable_graph = 0;
+ int g_ggml_sycl_disable_dnn = 0;
+ int g_ggml_sycl_enable_vmm = 1;
+ int g_ggml_sycl_prioritize_dmmv = 0;
++int g_ggml_sycl_enable_moe_gate_up_fusion = 3;
++int g_ggml_sycl_enable_moe_nx2_specialize = 1;
++int g_ggml_sycl_enable_moe_weighted_sum_fusion = 1;
++int g_ggml_sycl_enable_moe_weighted_tail_fusion = 0;
++int g_ggml_sycl_enable_moe_down_weighted_sum_fusion = 0;
++int g_ggml_sycl_enable_moe_shared_gate_up_fusion = 0;
++int g_ggml_sycl_enable_moe_shared_gate_tail_fusion = 0;
++int g_ggml_sycl_enable_moe_tail_add_fusion = 1;
++int g_ggml_sycl_enable_moe_tail_rms_fusion = 0;
++int g_ggml_sycl_enable_moe_dispatch_guard = 0;
++int g_ggml_sycl_enable_moe_gate_up_q8_handoff = 0;
++int g_ggml_sycl_enable_moe_act_q8_cache = 0;
++int g_ggml_sycl_enable_moe_q6_down_nx2_specialize = 0;
++int g_ggml_sycl_enable_rms_norm_mul_fusion = 0;
+ int g_ggml_sycl_use_async_mem_op = 0;
+ int g_ggml_sycl_use_async_mem_op_requested = 1;
+ int g_ggml_sycl_enable_level_zero = 0;
+@@ -260,6 +274,20 @@ static void ggml_check_sycl() try {
+         g_ggml_sycl_disable_dnn = get_sycl_env("GGML_SYCL_DISABLE_DNN", 0);
+         g_ggml_sycl_enable_vmm = get_sycl_env("GGML_SYCL_ENABLE_VMM", 1);
+         g_ggml_sycl_prioritize_dmmv = get_sycl_env("GGML_SYCL_PRIORITIZE_DMMV", 0);
++        g_ggml_sycl_enable_moe_gate_up_fusion = get_sycl_env("GGML_SYCL_ENABLE_MOE_GATE_UP_FUSION", 3);
++        g_ggml_sycl_enable_moe_nx2_specialize = get_sycl_env("GGML_SYCL_ENABLE_MOE_NX2_SPECIALIZE", 1);
++        g_ggml_sycl_enable_moe_weighted_sum_fusion = get_sycl_env("GGML_SYCL_ENABLE_MOE_WEIGHTED_SUM_FUSION", 1);
++        g_ggml_sycl_enable_moe_weighted_tail_fusion = get_sycl_env("GGML_SYCL_ENABLE_MOE_WEIGHTED_TAIL_FUSION", 0);
++        g_ggml_sycl_enable_moe_down_weighted_sum_fusion = get_sycl_env("GGML_SYCL_ENABLE_MOE_DOWN_WEIGHTED_SUM_FUSION", 0);
++        g_ggml_sycl_enable_moe_shared_gate_up_fusion = get_sycl_env("GGML_SYCL_ENABLE_MOE_SHARED_GATE_UP_FUSION", 0);
++        g_ggml_sycl_enable_moe_shared_gate_tail_fusion = get_sycl_env("GGML_SYCL_ENABLE_MOE_SHARED_GATE_TAIL_FUSION", 0);
++        g_ggml_sycl_enable_moe_tail_add_fusion = get_sycl_env("GGML_SYCL_ENABLE_MOE_TAIL_ADD_FUSION", 1);
++        g_ggml_sycl_enable_moe_tail_rms_fusion = get_sycl_env("GGML_SYCL_ENABLE_MOE_TAIL_RMS_FUSION", 0);
++        g_ggml_sycl_enable_moe_dispatch_guard = get_sycl_env("GGML_SYCL_ENABLE_MOE_DISPATCH_GUARD", 0);
++        g_ggml_sycl_enable_moe_gate_up_q8_handoff = get_sycl_env("GGML_SYCL_ENABLE_MOE_GATE_UP_Q8_HANDOFF", 0);
++        g_ggml_sycl_enable_moe_act_q8_cache = get_sycl_env("GGML_SYCL_ENABLE_MOE_ACT_Q8_CACHE", 0);
++        g_ggml_sycl_enable_moe_q6_down_nx2_specialize = get_sycl_env("GGML_SYCL_ENABLE_MOE_Q6_DOWN_NX2_SPECIALIZE", 0);
++        g_ggml_sycl_enable_rms_norm_mul_fusion = get_sycl_env("GGML_SYCL_ENABLE_RMS_NORM_MUL_FUSION", 0);
+ #ifdef GGML_SYCL_SUPPORT_LEVEL_ZERO
+         g_ggml_sycl_enable_level_zero = get_sycl_env("GGML_SYCL_ENABLE_LEVEL_ZERO", ggml_sycl_info().ext_oneapi_level_zero);
+ #else
+@@ -330,6 +358,20 @@ static void ggml_check_sycl() try {
+         GGML_LOG_INFO("  GGML_SYCL_ENABLE_VMM: virtual memory extension is not available\n");
+ #endif
+         GGML_LOG_INFO("  GGML_SYCL_PRIORITIZE_DMMV: %d\n", g_ggml_sycl_prioritize_dmmv);
++        GGML_LOG_INFO("  GGML_SYCL_ENABLE_MOE_GATE_UP_FUSION: %d\n", g_ggml_sycl_enable_moe_gate_up_fusion);
++        GGML_LOG_INFO("  GGML_SYCL_ENABLE_MOE_NX2_SPECIALIZE: %d\n", g_ggml_sycl_enable_moe_nx2_specialize);
++        GGML_LOG_INFO("  GGML_SYCL_ENABLE_MOE_WEIGHTED_SUM_FUSION: %d\n", g_ggml_sycl_enable_moe_weighted_sum_fusion);
++        GGML_LOG_INFO("  GGML_SYCL_ENABLE_MOE_WEIGHTED_TAIL_FUSION: %d\n", g_ggml_sycl_enable_moe_weighted_tail_fusion);
++        GGML_LOG_INFO("  GGML_SYCL_ENABLE_MOE_DOWN_WEIGHTED_SUM_FUSION: %d\n", g_ggml_sycl_enable_moe_down_weighted_sum_fusion);
++        GGML_LOG_INFO("  GGML_SYCL_ENABLE_MOE_SHARED_GATE_UP_FUSION: %d\n", g_ggml_sycl_enable_moe_shared_gate_up_fusion);
++        GGML_LOG_INFO("  GGML_SYCL_ENABLE_MOE_SHARED_GATE_TAIL_FUSION: %d\n", g_ggml_sycl_enable_moe_shared_gate_tail_fusion);
++        GGML_LOG_INFO("  GGML_SYCL_ENABLE_MOE_TAIL_ADD_FUSION: %d\n", g_ggml_sycl_enable_moe_tail_add_fusion);
++        GGML_LOG_INFO("  GGML_SYCL_ENABLE_MOE_TAIL_RMS_FUSION: %d\n", g_ggml_sycl_enable_moe_tail_rms_fusion);
++        GGML_LOG_INFO("  GGML_SYCL_ENABLE_MOE_DISPATCH_GUARD: %d\n", g_ggml_sycl_enable_moe_dispatch_guard);
++        GGML_LOG_INFO("  GGML_SYCL_ENABLE_MOE_GATE_UP_Q8_HANDOFF: %d\n", g_ggml_sycl_enable_moe_gate_up_q8_handoff);
++        GGML_LOG_INFO("  GGML_SYCL_ENABLE_MOE_ACT_Q8_CACHE: %d\n", g_ggml_sycl_enable_moe_act_q8_cache);
++        GGML_LOG_INFO("  GGML_SYCL_ENABLE_MOE_Q6_DOWN_NX2_SPECIALIZE: %d\n", g_ggml_sycl_enable_moe_q6_down_nx2_specialize);
++        GGML_LOG_INFO("  GGML_SYCL_ENABLE_RMS_NORM_MUL_FUSION: %d\n", g_ggml_sycl_enable_rms_norm_mul_fusion);
+         g_ggml_sycl_use_async_mem_op_requested = get_sycl_env("GGML_SYCL_USE_ASYNC_MEM_OP", 1);
+         GGML_LOG_INFO("  GGML_SYCL_USE_ASYNC_MEM_OP: %d\n", g_ggml_sycl_use_async_mem_op_requested);
+
+@@ -4380,36 +4422,1678 @@ static bool ggml_sycl_mul_mat_id_mmvq_fused(
+         static_cast<const ggml_tensor_extra_gpu *>(src0->extra);
+     const bool use_reorder = src0_extra && src0_extra->optimized_feature.reorder;
+
+-    ggml_sycl_pool_alloc<char> src1_q8_alloc(ctx.pool(),
+-        (size_t) ne11 * src1_padded_cols * sizeof(block_q8_1) / QK8_1);
+-    char * src1_ddq = src1_q8_alloc.get();
++    const size_t bytes_per_qrow = (size_t) src1_padded_cols * sizeof(block_q8_1) / QK8_1;
++    const bool use_handoff_q8 =
++        g_ggml_sycl_enable_moe_gate_up_q8_handoff &&
++        use_reorder &&
++        ctx.moe_gate_up_q8_src == src1 &&
++        ctx.moe_gate_up_q8 != nullptr &&
++        ctx.moe_gate_up_q8_row_stride == bytes_per_qrow &&
++        src0->type == GGML_TYPE_Q6_K &&
++        ne10 == 512 && ne11 == 8 && n_experts_used == 8;
++
++    char * src1_ddq = nullptr;
++    ggml_sycl_pool_alloc<char> src1_q8_alloc(ctx.pool());
++    if (use_handoff_q8) {
++        src1_ddq = ctx.moe_gate_up_q8;
++    } else {
++        src1_ddq = src1_q8_alloc.alloc((size_t) ne11 * bytes_per_qrow);
++        if (use_reorder) {
++            quantize_row_q8_1_sycl<quantize_and_reorder_q8_1_soa>(
++                (const float *) src1->data, src1_ddq, (int) ne10, (int) ne11,
++                src1_padded_cols, stream);
++        } else {
++            quantize_row_q8_1_sycl<quantize_q8_1>(
++                (const float *) src1->data, src1_ddq, (int) ne10, (int) ne11,
++                src1_padded_cols, stream);
++        }
++    }
++
++    const size_t src1_row_stride = (ne11 == 1) ? 0 : bytes_per_qrow;
++    if (use_handoff_q8) {
++        ctx.moe_gate_up_q8_src = nullptr;
++    }
++
+     if (use_reorder) {
++        return ggml_sycl_mul_mat_vec_q_id_reorder(
++            src0->type, src0->data, src1_ddq, (const int32_t *) ids->data,
++            (float *) dst->data, (int) ne10, nrows, n_experts_used,
++            /*expert_weight_stride=*/ src0->nb[2],
++            /*dst_row_stride=*/ dst->nb[1],
++            src1_row_stride, stream);
++    }
++    return ggml_sycl_mul_mat_vec_q_id(
++        src0->type, src0->data, src1_ddq, (const int32_t *) ids->data,
++        (float *) dst->data, (int) ne10, nrows, n_experts_used,
++        /*expert_weight_stride=*/ src0->nb[2],
++        /*dst_row_stride=*/ dst->nb[1],
++        src1_row_stride, stream);
++}
++
++static bool ggml_sycl_same_type_shape_stride(const ggml_tensor * a, const ggml_tensor * b) {
++    return a->type == b->type && ggml_are_same_shape(a, b) && ggml_are_same_stride(a, b);
++}
++
++static bool ggml_sycl_fusion_memory_ranges_ok(const ggml_cgraph * cgraph, int node_idx, int node_count, int out_node_idx) {
++    auto nodes_overlap = [](const ggml_tensor * a, const ggml_tensor * b) {
++        const uintptr_t a_start = (uintptr_t) a->data;
++        const uintptr_t a_end   = a_start + ggml_backend_buft_get_alloc_size(a->buffer->buft, a);
++        const uintptr_t b_start = (uintptr_t) b->data;
++        const uintptr_t b_end   = b_start + ggml_backend_buft_get_alloc_size(b->buffer->buft, b);
++        return (b_start <= a_start && a_start < b_end) || (a_start <= b_start && b_start < a_end);
++    };
++
++    const ggml_tensor * dst = cgraph->nodes[out_node_idx];
++    for (int j = node_idx; j < node_idx + node_count; ++j) {
++        for (int src_idx = 0; src_idx < GGML_MAX_SRC; ++src_idx) {
++            const ggml_tensor * src = cgraph->nodes[j]->src[src_idx];
++            if (!src || src->op == GGML_OP_NONE) {
++                continue;
++            }
++            if (!nodes_overlap(dst, src)) {
++                continue;
++            }
++
++            bool is_elided_intermediate = false;
++            for (int k = node_idx; k < j; ++k) {
++                if (cgraph->nodes[k] == src) {
++                    is_elided_intermediate = true;
++                    break;
++                }
++            }
++            if (!is_elided_intermediate) {
++                return false;
++            }
++        }
++    }
++    return true;
++}
++
++static bool ggml_sycl_tensor_matches_cached_q8_src(const ggml_tensor * t, const ggml_tensor * cached) {
++    return t == cached || (t && t->src[0] == cached) || (t && t->view_src == cached);
++}
++
++static bool ggml_sycl_should_fuse_moe_gate_up_swiglu(
++    const ggml_tensor * up, const ggml_tensor * gate, const ggml_tensor * glu) {
++    if (!up || !gate || !glu) {
++        return false;
++    }
++    if (up->op != GGML_OP_MUL_MAT_ID || gate->op != GGML_OP_MUL_MAT_ID || glu->op != GGML_OP_GLU) {
++        return false;
++    }
++    if (glu->src[0] != gate || glu->src[1] != up) {
++        return false;
++    }
++    if (ggml_get_glu_op(glu) != GGML_GLU_OP_SWIGLU) {
++        return false;
++    }
++    if (const bool swapped = ggml_get_op_params_i32(glu, 1); swapped) {
++        return false;
++    }
++
++    const ggml_tensor * up_w   = up->src[0];
++    const ggml_tensor * gate_w = gate->src[0];
++    const ggml_tensor * src1   = up->src[1];
++    const ggml_tensor * ids    = up->src[2];
++
++    if (!up_w || !gate_w || !src1 || !ids || gate->src[1] != src1 || gate->src[2] != ids) {
++        return false;
++    }
++    if (!ggml_sycl_same_type_shape_stride(up_w, gate_w)) {
++        return false;
++    }
++    if (!ggml_are_same_shape(up, gate) || !ggml_are_same_shape(up, glu)) {
++        return false;
++    }
++    if (up->type != GGML_TYPE_F32 || gate->type != GGML_TYPE_F32 || glu->type != GGML_TYPE_F32) {
++        return false;
++    }
++    if (src1->type != GGML_TYPE_F32 || src1->ne[2] != 1 || !ggml_is_contiguous(src1)) {
++        return false;
++    }
++    if (src1->ne[0] != up_w->ne[0] || src1->ne[0] % QK8_1 != 0) {
++        return false;
++    }
++    if (ids->ne[1] != 1) {
++        return false;
++    }
++    if (src1->ne[1] != 1 && src1->ne[1] != ids->ne[0]) {
++        return false;
++    }
++    if (ggml_backend_buffer_is_sycl_split(up_w->buffer) || ggml_backend_buffer_is_sycl_split(gate_w->buffer)) {
++        return false;
++    }
++
++    switch (up_w->type) {
++        case GGML_TYPE_Q4_K:
++        case GGML_TYPE_Q5_K:
++        case GGML_TYPE_Q6_K:
++            return true;
++        default:
++            return false;
++    }
++}
++
++static bool ggml_sycl_moe_gate_up_swiglu_reorder_fused(
++    ggml_backend_sycl_context & ctx, const ggml_tensor * up,
++    const ggml_tensor * gate, ggml_tensor * glu) {
++    if (!ggml_sycl_should_fuse_moe_gate_up_swiglu(up, gate, glu)) {
++        return false;
++    }
++
++    const ggml_tensor * up_w   = up->src[0];
++    const ggml_tensor * gate_w = gate->src[0];
++    const ggml_tensor * src1   = up->src[1];
++    const ggml_tensor * ids    = up->src[2];
++
++    opt_for_reorder_id(&ctx, up_w);
++    opt_for_reorder_id(&ctx, gate_w);
++
++    const ggml_tensor_extra_gpu * up_extra   = static_cast<const ggml_tensor_extra_gpu *>(up_w->extra);
++    const ggml_tensor_extra_gpu * gate_extra = static_cast<const ggml_tensor_extra_gpu *>(gate_w->extra);
++    if (!up_extra || !gate_extra ||
++        !up_extra->optimized_feature.reorder || !gate_extra->optimized_feature.reorder) {
++        return false;
++    }
++
++    const int64_t ne10             = src1->ne[0];
++    const int64_t ne11             = src1->ne[1];
++    const int     src1_padded_cols = GGML_PAD((int) ne10, MATRIX_ROW_PADDING);
++    const int     n_experts_used   = (int) ids->ne[0];
++    const int     nrows            = (int) up_w->ne[1];
++    const queue_ptr stream         = ctx.stream();
++
++    const size_t bytes_per_qrow = (size_t) src1_padded_cols * sizeof(block_q8_1) / QK8_1;
++    const size_t src1_q8_size = (size_t) ne11 * bytes_per_qrow;
++    const bool use_cached_q8 =
++        ctx.moe_act_q8 != nullptr &&
++        ctx.moe_act_q8_ne0 == ne10 &&
++        ctx.moe_act_q8_ne1 == ne11 &&
++        ctx.moe_act_q8_row_stride == bytes_per_qrow &&
++        (ggml_sycl_tensor_matches_cached_q8_src(src1, ctx.moe_act_q8_src) ||
++         (g_ggml_sycl_enable_moe_act_q8_cache && ctx.moe_act_q8_src == src1));
++    char * src1_ddq = nullptr;
++    ggml_sycl_pool_alloc<char> src1_q8_alloc(ctx.pool());
++    if (use_cached_q8) {
++        src1_ddq = ctx.moe_act_q8;
++    } else if (g_ggml_sycl_enable_moe_act_q8_cache && ne11 == 1) {
++        if (!ctx.moe_act_q8_alloc) {
++            ctx.moe_act_q8_alloc = std::make_unique<ggml_sycl_pool_alloc<char>>(ctx.pool());
++        }
++        if (!ctx.moe_act_q8 || ctx.moe_act_q8_size < src1_q8_size) {
++            ctx.moe_act_q8 = ctx.moe_act_q8_alloc->realloc(src1_q8_size);
++            ctx.moe_act_q8_size = ctx.moe_act_q8_alloc->actual_size;
++        }
++        src1_ddq = ctx.moe_act_q8;
++    } else {
++        src1_ddq = src1_q8_alloc.alloc(src1_q8_size);
++    }
++    if (!use_cached_q8) {
+         quantize_row_q8_1_sycl<quantize_and_reorder_q8_1_soa>(
+             (const float *) src1->data, src1_ddq, (int) ne10, (int) ne11,
+             src1_padded_cols, stream);
++    }
++
++    const size_t src1_row_stride = (ne11 == 1) ? 0 : bytes_per_qrow;
++    if (!use_cached_q8 && g_ggml_sycl_enable_moe_act_q8_cache && ne11 == 1 && src1_ddq == ctx.moe_act_q8) {
++        ctx.moe_act_q8_src = src1;
++        ctx.moe_act_q8_ne0 = ne10;
++        ctx.moe_act_q8_ne1 = ne11;
++        ctx.moe_act_q8_row_stride = bytes_per_qrow;
++    }
++
++    if (g_ggml_sycl_enable_moe_gate_up_q8_handoff &&
++        g_ggml_sycl_enable_moe_gate_up_fusion == 3 &&
++        ne10 == 2048 && ne11 == 1 && nrows == 512 && n_experts_used == 8 &&
++        glu->ne[0] == 512 && glu->ne[1] == 8 && glu->ne[2] == 1 && glu->ne[3] == 1) {
++        constexpr int down_cols = 512;
++        constexpr int down_rows = 8;
++        constexpr int down_padded_cols = GGML_PAD(down_cols, MATRIX_ROW_PADDING);
++        const size_t down_q8_row_stride = (size_t) down_padded_cols * sizeof(block_q8_1) / QK8_1;
++        const size_t down_q8_size = down_rows * down_q8_row_stride;
++
++        if (!ctx.moe_gate_up_q8_alloc) {
++            ctx.moe_gate_up_q8_alloc = std::make_unique<ggml_sycl_pool_alloc<char>>(ctx.pool());
++        }
++        if (!ctx.moe_gate_up_q8 || ctx.moe_gate_up_q8_size < down_q8_size) {
++            ctx.moe_gate_up_q8 = ctx.moe_gate_up_q8_alloc->realloc(down_q8_size);
++            ctx.moe_gate_up_q8_size = ctx.moe_gate_up_q8_alloc->actual_size;
++        }
++
++        const bool ok = ggml_sycl_mul_mat_vec_q_id_swiglu_reorder_nx2_q8_handoff(
++            up_w->type, up_w->data, gate_w->data, src1_ddq, (const int32_t *) ids->data,
++            (float *) glu->data, ctx.moe_gate_up_q8, n_experts_used,
++            /*expert_weight_stride=*/ up_w->nb[2],
++            /*dst_row_stride=*/ glu->nb[1],
++            src1_row_stride, down_q8_row_stride, stream);
++        if (ok) {
++            ctx.moe_gate_up_q8_src = glu;
++            ctx.moe_gate_up_q8_row_stride = down_q8_row_stride;
++            return true;
++        }
++        ctx.moe_gate_up_q8_src = nullptr;
++    }
++
++    return ggml_sycl_mul_mat_vec_q_id_swiglu_reorder(
++        up_w->type, up_w->data, gate_w->data, src1_ddq, (const int32_t *) ids->data,
++        (float *) glu->data, (int) ne10, nrows, n_experts_used,
++        /*expert_weight_stride=*/ up_w->nb[2],
++        /*dst_row_stride=*/ glu->nb[1],
++        src1_row_stride, stream);
++}
++
++static bool ggml_sycl_is_nx2_moe_gate_up_swiglu_shape(
++    const ggml_tensor * up, const ggml_tensor * gate, const ggml_tensor * glu) {
++    if (!ggml_sycl_should_fuse_moe_gate_up_swiglu(up, gate, glu)) {
++        return false;
++    }
++
++    const ggml_tensor * up_w = up->src[0];
++    const ggml_tensor * ids  = up->src[2];
++    return (up_w->type == GGML_TYPE_Q4_K || up_w->type == GGML_TYPE_Q5_K) &&
++        up_w->ne[0] == 2048 && up_w->ne[1] == 512 && ids->ne[0] == 8;
++}
++
++static bool ggml_sycl_moe_gate_up_shared_q8_reorder_fused(
++    ggml_backend_sycl_context & ctx, const ggml_tensor * up,
++    const ggml_tensor * gate, const ggml_tensor * glu) {
++    if (!ggml_sycl_should_fuse_moe_gate_up_swiglu(up, gate, glu)) {
++        return false;
++    }
++
++    const ggml_tensor * up_w   = up->src[0];
++    const ggml_tensor * gate_w = gate->src[0];
++    const ggml_tensor * src1   = up->src[1];
++    const ggml_tensor * ids    = up->src[2];
++
++    opt_for_reorder_id(&ctx, up_w);
++    opt_for_reorder_id(&ctx, gate_w);
++
++    const ggml_tensor_extra_gpu * up_extra   = static_cast<const ggml_tensor_extra_gpu *>(up_w->extra);
++    const ggml_tensor_extra_gpu * gate_extra = static_cast<const ggml_tensor_extra_gpu *>(gate_w->extra);
++    if (!up_extra || !gate_extra ||
++        !up_extra->optimized_feature.reorder || !gate_extra->optimized_feature.reorder) {
++        return false;
++    }
++
++    const int64_t ne10             = src1->ne[0];
++    const int64_t ne11             = src1->ne[1];
++    const int     src1_padded_cols = GGML_PAD((int) ne10, MATRIX_ROW_PADDING);
++    const int     n_experts_used   = (int) ids->ne[0];
++    const int     nrows            = (int) up_w->ne[1];
++    const queue_ptr stream         = ctx.stream();
++
++    ggml_sycl_pool_alloc<char> src1_q8_alloc(ctx.pool(),
++        (size_t) ne11 * src1_padded_cols * sizeof(block_q8_1) / QK8_1);
++    char * src1_ddq = src1_q8_alloc.get();
++    quantize_row_q8_1_sycl<quantize_and_reorder_q8_1_soa>(
++        (const float *) src1->data, src1_ddq, (int) ne10, (int) ne11,
++        src1_padded_cols, stream);
++
++    const size_t bytes_per_qrow = (size_t) src1_padded_cols * sizeof(block_q8_1) / QK8_1;
++    const size_t src1_row_stride = (ne11 == 1) ? 0 : bytes_per_qrow;
++
++    const bool gate_ok = ggml_sycl_mul_mat_vec_q_id_reorder(
++        gate_w->type, gate_w->data, src1_ddq, (const int32_t *) ids->data,
++        (float *) gate->data, (int) ne10, nrows, n_experts_used,
++        /*expert_weight_stride=*/ gate_w->nb[2],
++        /*dst_row_stride=*/ gate->nb[1],
++        src1_row_stride, stream);
++    const bool up_ok = ggml_sycl_mul_mat_vec_q_id_reorder(
++        up_w->type, up_w->data, src1_ddq, (const int32_t *) ids->data,
++        (float *) up->data, (int) ne10, nrows, n_experts_used,
++        /*expert_weight_stride=*/ up_w->nb[2],
++        /*dst_row_stride=*/ up->nb[1],
++        src1_row_stride, stream);
++
++    return gate_ok && up_ok;
++}
++
++static int ggml_sycl_try_fuse_moe_gate_up_glu(ggml_backend_sycl_context & ctx, const ggml_cgraph * cgraph, int node_idx) {
++    if (!g_ggml_sycl_enable_moe_gate_up_fusion || g_ggml_sycl_disable_optimize) {
++        return 0;
++    }
++    if (!ggml_can_fuse_subgraph(cgraph, node_idx,
++            { GGML_OP_MUL_MAT_ID, GGML_OP_MUL_MAT_ID, GGML_OP_GLU }, { node_idx + 2 })) {
++        return 0;
++    }
++    if (!ggml_sycl_fusion_memory_ranges_ok(cgraph, node_idx, 3, node_idx + 2)) {
++        return 0;
++    }
++
++    ggml_tensor * glu  = cgraph->nodes[node_idx + 2];
++    ggml_tensor * gate = glu->src[0];
++    ggml_tensor * up   = glu->src[1];
++    const bool ordered =
++        (gate == cgraph->nodes[node_idx] && up == cgraph->nodes[node_idx + 1]) ||
++        (gate == cgraph->nodes[node_idx + 1] && up == cgraph->nodes[node_idx]);
++    if (!ordered) {
++        return 0;
++    }
++
++    if (g_ggml_sycl_enable_moe_gate_up_fusion == 2) {
++        return ggml_sycl_moe_gate_up_shared_q8_reorder_fused(ctx, up, gate, glu) ? 1 : 0;
++    }
++    if (g_ggml_sycl_enable_moe_gate_up_fusion == 3 &&
++        !ggml_sycl_is_nx2_moe_gate_up_swiglu_shape(up, gate, glu)) {
++        return 0;
++    }
++    return ggml_sycl_moe_gate_up_swiglu_reorder_fused(ctx, up, gate, glu) ? 2 : 0;
++}
++
++static bool ggml_sycl_should_fuse_moe_shared_gate_up_swiglu(
++    const ggml_tensor * up, const ggml_tensor * gate, const ggml_tensor * glu) {
++    if (!up || !gate || !glu) {
++        return false;
++    }
++    if (up->op != GGML_OP_MUL_MAT || gate->op != GGML_OP_MUL_MAT || glu->op != GGML_OP_GLU) {
++        return false;
++    }
++    if (glu->src[0] != gate || glu->src[1] != up) {
++        return false;
++    }
++    if (ggml_get_glu_op(glu) != GGML_GLU_OP_SWIGLU) {
++        return false;
++    }
++    if (const bool swapped = ggml_get_op_params_i32(glu, 1); swapped) {
++        return false;
++    }
++
++    const ggml_tensor * up_w   = up->src[0];
++    const ggml_tensor * gate_w = gate->src[0];
++    const ggml_tensor * src1   = up->src[1];
++
++    if (!up_w || !gate_w || !src1 || gate->src[1] != src1) {
++        return false;
++    }
++    if (!ggml_sycl_same_type_shape_stride(up_w, gate_w)) {
++        return false;
++    }
++    if (!ggml_are_same_shape(up, gate) || !ggml_are_same_shape(up, glu)) {
++        return false;
++    }
++    if (up->type != GGML_TYPE_F32 || gate->type != GGML_TYPE_F32 || glu->type != GGML_TYPE_F32) {
++        return false;
++    }
++    if (src1->type != GGML_TYPE_F32 || !ggml_is_contiguous(src1) ||
++        src1->ne[1] != 1 || src1->ne[2] != 1 || src1->ne[3] != 1) {
++        return false;
++    }
++    if (src1->ne[0] != 2048 || up_w->ne[0] != 2048 || up_w->ne[1] != 512) {
++        return false;
++    }
++    if (up->ne[0] != 512 || up->ne[1] != 1 || up->ne[2] != 1 || up->ne[3] != 1) {
++        return false;
++    }
++    if (ggml_backend_buffer_is_sycl_split(up_w->buffer) || ggml_backend_buffer_is_sycl_split(gate_w->buffer)) {
++        return false;
++    }
++
++    return up_w->type == GGML_TYPE_Q4_K || up_w->type == GGML_TYPE_Q5_K;
++}
++
++static bool ggml_sycl_moe_shared_gate_up_swiglu_reorder_fused(
++    ggml_backend_sycl_context & ctx, ggml_tensor * up,
++    ggml_tensor * gate, ggml_tensor * glu) {
++    if (!ggml_sycl_should_fuse_moe_shared_gate_up_swiglu(up, gate, glu)) {
++        return false;
++    }
++
++    const ggml_tensor * up_w   = up->src[0];
++    const ggml_tensor * gate_w = gate->src[0];
++    const ggml_tensor * src1   = up->src[1];
++
++    opt_for_reorder(&ctx, up_w, src1, up, mul_mat_algo::MMVQ);
++    opt_for_reorder(&ctx, gate_w, src1, gate, mul_mat_algo::MMVQ);
++
++    const ggml_tensor_extra_gpu * up_extra   = static_cast<const ggml_tensor_extra_gpu *>(up_w->extra);
++    const ggml_tensor_extra_gpu * gate_extra = static_cast<const ggml_tensor_extra_gpu *>(gate_w->extra);
++    if (!up_extra || !gate_extra ||
++        !up_extra->optimized_feature.reorder || !gate_extra->optimized_feature.reorder) {
++        return false;
++    }
++
++    constexpr int ne10             = 2048;
++    constexpr int src1_padded_cols = GGML_PAD(ne10, MATRIX_ROW_PADDING);
++    const queue_ptr stream         = ctx.stream();
++
++    const size_t bytes_per_qrow = (size_t) src1_padded_cols * sizeof(block_q8_1) / QK8_1;
++    const bool use_cached_q8 =
++        g_ggml_sycl_enable_moe_act_q8_cache &&
++        ctx.moe_act_q8_src == src1 &&
++        ctx.moe_act_q8 != nullptr &&
++        ctx.moe_act_q8_ne0 == ne10 &&
++        ctx.moe_act_q8_ne1 == 1 &&
++        ctx.moe_act_q8_row_stride == bytes_per_qrow;
++
++    char * src1_ddq = nullptr;
++    ggml_sycl_pool_alloc<char> src1_q8_alloc(ctx.pool());
++    if (use_cached_q8) {
++        src1_ddq = ctx.moe_act_q8;
++    } else {
++        src1_ddq = src1_q8_alloc.alloc(bytes_per_qrow);
++        quantize_row_q8_1_sycl<quantize_and_reorder_q8_1_soa>(
++            (const float *) src1->data, src1_ddq, ne10, 1, src1_padded_cols, stream);
++    }
++
++    return ggml_sycl_mul_mat_vec_q_swiglu_reorder_nx2(
++        up_w->type, up_w->data, gate_w->data, src1_ddq,
++        (float *) glu->data, glu->nb[0], stream);
++}
++
++static int ggml_sycl_try_fuse_moe_shared_gate_up_glu(ggml_backend_sycl_context & ctx, const ggml_cgraph * cgraph, int node_idx) {
++    if (!g_ggml_sycl_enable_moe_shared_gate_up_fusion || g_ggml_sycl_disable_optimize) {
++        return 0;
++    }
++    if (!ggml_can_fuse_subgraph(cgraph, node_idx,
++            { GGML_OP_MUL_MAT, GGML_OP_MUL_MAT, GGML_OP_GLU }, { node_idx + 2 })) {
++        return 0;
++    }
++    if (!ggml_sycl_fusion_memory_ranges_ok(cgraph, node_idx, 3, node_idx + 2)) {
++        return 0;
++    }
++
++    ggml_tensor * glu  = cgraph->nodes[node_idx + 2];
++    ggml_tensor * gate = glu->src[0];
++    ggml_tensor * up   = glu->src[1];
++    const bool ordered =
++        (gate == cgraph->nodes[node_idx] && up == cgraph->nodes[node_idx + 1]) ||
++        (gate == cgraph->nodes[node_idx + 1] && up == cgraph->nodes[node_idx]);
++    if (!ordered) {
++        return 0;
++    }
++
++    return ggml_sycl_moe_shared_gate_up_swiglu_reorder_fused(ctx, up, gate, glu) ? 2 : 0;
++}
++
++static bool ggml_sycl_moe_weighted_sum_view_index(
++    const ggml_tensor * view, const ggml_tensor * weighted, bool seen[8]) {
++    if (!view || view->view_src != weighted || view->type != GGML_TYPE_F32) {
++        return false;
++    }
++    if (view->ne[0] != 2048 || view->ne[1] != 1 || view->ne[2] != 1 || view->ne[3] != 1) {
++        return false;
++    }
++    if (view->nb[0] != (int64_t) sizeof(float) || weighted->nb[1] != 2048 * (int64_t) sizeof(float)) {
++        return false;
++    }
++    if (view->view_offs % weighted->nb[1] != 0) {
++        return false;
++    }
++
++    const int expert = (int) (view->view_offs / weighted->nb[1]);
++    if (expert < 0 || expert >= 8 || seen[expert]) {
++        return false;
++    }
++    seen[expert] = true;
++    return true;
++}
++
++static bool ggml_sycl_moe_down_weighted_sum_fused(
++    ggml_backend_sycl_context & ctx, const ggml_tensor * down,
++    const ggml_tensor * weights, ggml_tensor * dst) {
++    const ggml_tensor * down_w = down->src[0];
++    const ggml_tensor * src1   = down->src[1];
++    const ggml_tensor * ids    = down->src[2];
++    if (!down_w || !src1 || !ids || !weights) {
++        return false;
++    }
++    if (down_w->type != GGML_TYPE_Q6_K || ggml_backend_buffer_is_sycl_split(down_w->buffer)) {
++        return false;
++    }
++    if (down_w->ne[0] != 512 || down_w->ne[1] != 2048 ||
++        src1->type != GGML_TYPE_F32 || src1->ne[0] != 512 || src1->ne[1] != 8 ||
++        src1->ne[2] != 1 || src1->ne[3] != 1 || !ggml_is_contiguous(src1)) {
++        return false;
++    }
++    if (ids->ne[0] != 8 || ids->ne[1] != 1 ||
++        weights->type != GGML_TYPE_F32 || weights->ne[0] != 1 || weights->ne[1] != 8 ||
++        weights->ne[2] != 1 || weights->ne[3] != 1 ||
++        weights->nb[0] != (int64_t) sizeof(float)) {
++        return false;
++    }
++    if (!dst || dst->type != GGML_TYPE_F32 || dst->ne[0] != 2048 || dst->ne[1] != 1 ||
++        dst->ne[2] != 1 || dst->ne[3] != 1 || dst->nb[0] != (int64_t) sizeof(float)) {
++        return false;
++    }
++
++    opt_for_reorder_id(&ctx, down_w);
++    const ggml_tensor_extra_gpu * down_extra =
++        static_cast<const ggml_tensor_extra_gpu *>(down_w->extra);
++    if (!down_extra || !down_extra->optimized_feature.reorder) {
++        return false;
++    }
++
++    constexpr int ne10             = 512;
++    constexpr int ne11             = 8;
++    constexpr int src1_padded_cols = GGML_PAD(ne10, MATRIX_ROW_PADDING);
++    const queue_ptr stream         = ctx.stream();
++
++    ggml_sycl_pool_alloc<char> src1_q8_alloc(ctx.pool(),
++        (size_t) ne11 * src1_padded_cols * sizeof(block_q8_1) / QK8_1);
++    char * src1_ddq = src1_q8_alloc.get();
++    quantize_row_q8_1_sycl<quantize_and_reorder_q8_1_soa>(
++        (const float *) src1->data, src1_ddq, ne10, ne11, src1_padded_cols, stream);
++
++    const size_t bytes_per_qrow = (size_t) src1_padded_cols * sizeof(block_q8_1) / QK8_1;
++    if (g_ggml_sycl_enable_moe_down_weighted_sum_fusion == 2) {
++        return ggml_sycl_mul_mat_vec_q_id_reorder_down_weighted_sum_atomic(
++            down_w->type, down_w->data, src1_ddq, (const int32_t *) ids->data,
++            weights->data, (float *) dst->data,
++            /*expert_weight_stride=*/ down_w->nb[2],
++            /*src1_row_stride=*/ bytes_per_qrow,
++            /*weights_row_stride=*/ weights->nb[1],
++            stream);
++    }
++    if (g_ggml_sycl_enable_moe_down_weighted_sum_fusion == 3) {
++        return ggml_sycl_mul_mat_vec_q_id_reorder_down_weighted_sum_local(
++            down_w->type, down_w->data, src1_ddq, (const int32_t *) ids->data,
++            weights->data, (float *) dst->data,
++            /*expert_weight_stride=*/ down_w->nb[2],
++            /*src1_row_stride=*/ bytes_per_qrow,
++            /*weights_row_stride=*/ weights->nb[1],
++            stream);
++    }
++
++    return ggml_sycl_mul_mat_vec_q_id_reorder_down_weighted_sum(
++        down_w->type, down_w->data, src1_ddq, (const int32_t *) ids->data,
++        weights->data, (float *) dst->data,
++        /*expert_weight_stride=*/ down_w->nb[2],
++        /*src1_row_stride=*/ bytes_per_qrow,
++        /*weights_row_stride=*/ weights->nb[1],
++        stream);
++}
++
++static int ggml_sycl_try_fuse_moe_down_weighted_sum(ggml_backend_sycl_context & ctx, const ggml_cgraph * cgraph, int node_idx) {
++    if (!g_ggml_sycl_enable_moe_down_weighted_sum_fusion || g_ggml_sycl_disable_optimize) {
++        return 0;
++    }
++    if (node_idx + 8 >= cgraph->n_nodes) {
++        return 0;
++    }
++
++    ggml_tensor * down = cgraph->nodes[node_idx];
++    ggml_tensor * mul  = cgraph->nodes[node_idx + 1];
++    if (!down || !mul ||
++        down->op != GGML_OP_MUL_MAT_ID || mul->op != GGML_OP_MUL ||
++        (down->flags & GGML_TENSOR_FLAG_COMPUTE) == 0 ||
++        (mul->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
++        return 0;
++    }
++    if (down->type != GGML_TYPE_F32 ||
++        down->ne[0] != 2048 || down->ne[1] != 8 || down->ne[2] != 1 || down->ne[3] != 1 ||
++        down->nb[0] != (int64_t) sizeof(float) || down->nb[1] != 2048 * (int64_t) sizeof(float)) {
++        return 0;
++    }
++    if (mul->type != GGML_TYPE_F32 ||
++        mul->ne[0] != 2048 || mul->ne[1] != 8 || mul->ne[2] != 1 || mul->ne[3] != 1 ||
++        mul->nb[0] != (int64_t) sizeof(float) || mul->nb[1] != 2048 * (int64_t) sizeof(float)) {
++        return 0;
++    }
++
++    const ggml_tensor * weights = nullptr;
++    if (mul->src[0] == down) {
++        weights = mul->src[1];
++    } else if (mul->src[1] == down) {
++        weights = mul->src[0];
++    } else {
++        return 0;
++    }
++
++    bool seen[8] = {};
++    ggml_tensor * prev = nullptr;
++    for (int add_idx = 0; add_idx < 7; ++add_idx) {
++        ggml_tensor * add = cgraph->nodes[node_idx + 2 + add_idx];
++        if (!add || add->op != GGML_OP_ADD || (add->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
++            return 0;
++        }
++        if (add->type != GGML_TYPE_F32 ||
++            add->ne[0] != 2048 || add->ne[1] != 1 || add->ne[2] != 1 || add->ne[3] != 1 ||
++            add->nb[0] != (int64_t) sizeof(float)) {
++            return 0;
++        }
++
++        const ggml_tensor * view = nullptr;
++        if (add_idx == 0) {
++            if (!ggml_sycl_moe_weighted_sum_view_index(add->src[0], mul, seen) ||
++                !ggml_sycl_moe_weighted_sum_view_index(add->src[1], mul, seen)) {
++                return 0;
++            }
++        } else {
++            if (add->src[0] == prev) {
++                view = add->src[1];
++            } else if (add->src[1] == prev) {
++                view = add->src[0];
++            } else {
++                return 0;
++            }
++            if (!ggml_sycl_moe_weighted_sum_view_index(view, mul, seen)) {
++                return 0;
++            }
++        }
++        prev = add;
++    }
++
++    for (int i = 0; i < 8; ++i) {
++        if (!seen[i]) {
++            return 0;
++        }
++    }
++
++    ggml_tensor * dst = cgraph->nodes[node_idx + 8];
++    if (!ggml_sycl_fusion_memory_ranges_ok(cgraph, node_idx, 9, node_idx + 8)) {
++        return 0;
++    }
++
++    return ggml_sycl_moe_down_weighted_sum_fused(ctx, down, weights, dst) ? 8 : 0;
++}
++
++static bool ggml_sycl_moe_weighted_sum_8_f32(
++    const ggml_tensor * weighted, const ggml_tensor * weights, ggml_tensor * dst,
++    dpct::queue_ptr stream) {
++    const char * weighted_data = (const char *) weighted->data;
++    const char * weights_data  = (const char *) weights->data;
++    char * dst_data            = (char *) dst->data;
++
++    const size_t weighted_nb1 = weighted->nb[1];
++    const size_t weights_nb1  = weights->nb[1];
++    const size_t dst_nb0      = dst->nb[0];
++
++    stream->parallel_for(sycl::range<1>(2048), [=](sycl::id<1> tid) {
++        const size_t row = tid[0];
++
++        float sum = 0.0f;
++#pragma unroll
++        for (int expert = 0; expert < 8; ++expert) {
++            const float down_val =
++                *(const float *) (weighted_data + expert * weighted_nb1 + row * sizeof(float));
++            const float weight = *(const float *) (weights_data + expert * weights_nb1);
++            sum += down_val * weight;
++        }
++
++        *(float *) (dst_data + row * dst_nb0) = sum;
++    });
++
++    return true;
++}
++
++static bool ggml_sycl_moe_weighted_sum_8_f32_vec4(
++    const ggml_tensor * weighted, const ggml_tensor * weights, ggml_tensor * dst,
++    dpct::queue_ptr stream) {
++    if (dst->nb[0] != (int64_t) sizeof(float)) {
++        return false;
++    }
++
++    const char * weighted_data = (const char *) weighted->data;
++    const char * weights_data  = (const char *) weights->data;
++    char * dst_data            = (char *) dst->data;
++
++    const size_t weighted_nb1 = weighted->nb[1];
++    const size_t weights_nb1  = weights->nb[1];
++
++    stream->parallel_for(sycl::range<1>(512), [=](sycl::id<1> tid) {
++        const size_t row = tid[0] * 4;
++
++        sycl::float4 sum = sycl::float4(0.0f);
++#pragma unroll
++        for (int expert = 0; expert < 8; ++expert) {
++            const float * down_ptr =
++                (const float *) (weighted_data + expert * weighted_nb1 + row * sizeof(float));
++            const sycl::float4 down_val = *(const sycl::float4 *) down_ptr;
++            const float weight = *(const float *) (weights_data + expert * weights_nb1);
++            sum += down_val * sycl::float4(weight);
++        }
++
++        *(sycl::float4 *) (dst_data + row * sizeof(float)) = sum;
++    });
++
++    return true;
++}
++
++static bool ggml_sycl_moe_weighted_sum_8_f32_local_weights(
++    const ggml_tensor * weighted, const ggml_tensor * weights, ggml_tensor * dst,
++    dpct::queue_ptr stream) {
++    const char * weighted_data = (const char *) weighted->data;
++    const char * weights_data  = (const char *) weights->data;
++    char * dst_data            = (char *) dst->data;
++
++    const size_t weighted_nb1 = weighted->nb[1];
++    const size_t weights_nb1  = weights->nb[1];
++    const size_t dst_nb0      = dst->nb[0];
++
++    constexpr size_t wg_size = 256;
++    stream->submit([&](sycl::handler & cgh) {
++        sycl::local_accessor<float, 1> local_weights(sycl::range<1>(8), cgh);
++        cgh.parallel_for(
++            sycl::nd_range<1>(sycl::range<1>(2048), sycl::range<1>(wg_size)),
++            [=](sycl::nd_item<1> item) {
++                const size_t local_id = item.get_local_linear_id();
++                if (local_id < 8) {
++                    local_weights[local_id] =
++                        *(const float *) (weights_data + local_id * weights_nb1);
++                }
++                item.barrier(sycl::access::fence_space::local_space);
++
++                const size_t row = item.get_global_linear_id();
++                float sum = 0.0f;
++#pragma unroll
++                for (int expert = 0; expert < 8; ++expert) {
++                    const float down_val =
++                        *(const float *) (weighted_data + expert * weighted_nb1 + row * sizeof(float));
++                    sum += down_val * local_weights[expert];
++                }
++
++                *(float *) (dst_data + row * dst_nb0) = sum;
++            });
++    });
++
++    return true;
++}
++
++static bool ggml_sycl_moe_weighted_tail_8_f32(
++    const ggml_tensor * weighted, const ggml_tensor * weights,
++    const ggml_tensor * add0_c, const ggml_tensor * add1_c, ggml_tensor * dst,
++    dpct::queue_ptr stream) {
++    if (dst->nb[0] != (int64_t) sizeof(float)) {
++        return false;
++    }
++
++    const char * weighted_data = (const char *) weighted->data;
++    const char * weights_data  = (const char *) weights->data;
++    const float * add0_data    = (const float *) add0_c->data;
++    const float * add1_data    = (const float *) add1_c->data;
++    float * dst_data           = (float *) dst->data;
++
++    const size_t weighted_nb1 = weighted->nb[1];
++    const size_t weights_nb1  = weights->nb[1];
++
++    stream->parallel_for(sycl::range<1>(2048), [=](sycl::id<1> tid) {
++        const size_t row = tid[0];
++
++        float sum = 0.0f;
++#pragma unroll
++        for (int expert = 0; expert < 8; ++expert) {
++            const float down_val =
++                *(const float *) (weighted_data + expert * weighted_nb1 + row * sizeof(float));
++            const float weight = *(const float *) (weights_data + expert * weights_nb1);
++            sum += down_val * weight;
++        }
++
++        dst_data[row] = sum + add0_data[row] + add1_data[row];
++    });
++
++    return true;
++}
++
++static bool ggml_sycl_is_nx2_f32_vector(const ggml_tensor * t);
++
++static int ggml_sycl_try_fuse_moe_weighted_sum(ggml_backend_sycl_context & ctx, const ggml_cgraph * cgraph, int node_idx) {
++    if (!g_ggml_sycl_enable_moe_weighted_sum_fusion || g_ggml_sycl_disable_optimize) {
++        return 0;
++    }
++    if (node_idx + 7 >= cgraph->n_nodes) {
++        return 0;
++    }
++
++    ggml_tensor * mul = cgraph->nodes[node_idx];
++    if (!mul || mul->op != GGML_OP_MUL || (mul->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
++        return 0;
++    }
++    if (mul->type != GGML_TYPE_F32 ||
++        mul->ne[0] != 2048 || mul->ne[1] != 8 || mul->ne[2] != 1 || mul->ne[3] != 1 ||
++        mul->nb[0] != (int64_t) sizeof(float) || mul->nb[1] != 2048 * (int64_t) sizeof(float)) {
++        return 0;
++    }
++
++    const ggml_tensor * weighted = nullptr;
++    const ggml_tensor * weights  = nullptr;
++    for (int src_idx = 0; src_idx < 2; ++src_idx) {
++        const ggml_tensor * src = mul->src[src_idx];
++        if (!src || src->type != GGML_TYPE_F32) {
++            return 0;
++        }
++        if (src->op == GGML_OP_MUL_MAT_ID &&
++            src->ne[0] == 2048 && src->ne[1] == 8 && src->ne[2] == 1 && src->ne[3] == 1 &&
++            src->nb[0] == (int64_t) sizeof(float) && src->nb[1] == 2048 * (int64_t) sizeof(float)) {
++            weighted = src;
++        } else if (src->ne[0] == 1 && src->ne[1] == 8 && src->ne[2] == 1 && src->ne[3] == 1 &&
++            src->nb[0] == (int64_t) sizeof(float)) {
++            weights = src;
++        }
++    }
++    if (!weighted || !weights) {
++        return 0;
++    }
++
++    bool seen[8] = {};
++    ggml_tensor * prev = nullptr;
++    for (int add_idx = 0; add_idx < 7; ++add_idx) {
++        ggml_tensor * add = cgraph->nodes[node_idx + 1 + add_idx];
++        if (!add || add->op != GGML_OP_ADD || (add->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
++            return 0;
++        }
++        if (add->type != GGML_TYPE_F32 ||
++            add->ne[0] != 2048 || add->ne[1] != 1 || add->ne[2] != 1 || add->ne[3] != 1 ||
++            add->nb[0] != (int64_t) sizeof(float)) {
++            return 0;
++        }
++
++        const ggml_tensor * view = nullptr;
++        if (add_idx == 0) {
++            if (!ggml_sycl_moe_weighted_sum_view_index(add->src[0], mul, seen) ||
++                !ggml_sycl_moe_weighted_sum_view_index(add->src[1], mul, seen)) {
++                return 0;
++            }
++        } else {
++            if (add->src[0] == prev) {
++                view = add->src[1];
++            } else if (add->src[1] == prev) {
++                view = add->src[0];
++            } else {
++                return 0;
++            }
++            if (!ggml_sycl_moe_weighted_sum_view_index(view, mul, seen)) {
++                return 0;
++            }
++        }
++        prev = add;
++    }
++
++    for (int i = 0; i < 8; ++i) {
++        if (!seen[i]) {
++            return 0;
++        }
++    }
++
++    ggml_tensor * dst = cgraph->nodes[node_idx + 7];
++    if (!dst || !ggml_sycl_fusion_memory_ranges_ok(cgraph, node_idx, 8, node_idx + 7)) {
++        return 0;
++    }
++
++    if (g_ggml_sycl_enable_moe_weighted_sum_fusion == 2) {
++        return ggml_sycl_moe_weighted_sum_8_f32_vec4(weighted, weights, dst, ctx.stream()) ? 7 : 0;
++    }
++    if (g_ggml_sycl_enable_moe_weighted_sum_fusion == 3) {
++        return ggml_sycl_moe_weighted_sum_8_f32_local_weights(weighted, weights, dst, ctx.stream()) ? 7 : 0;
++    }
++
++    return ggml_sycl_moe_weighted_sum_8_f32(weighted, weights, dst, ctx.stream()) ? 7 : 0;
++}
++
++static int ggml_sycl_try_fuse_moe_weighted_tail(ggml_backend_sycl_context & ctx, const ggml_cgraph * cgraph, int node_idx) {
++    if (!g_ggml_sycl_enable_moe_weighted_tail_fusion || g_ggml_sycl_disable_optimize) {
++        return 0;
++    }
++    if (node_idx + 9 >= cgraph->n_nodes) {
++        return 0;
++    }
++
++    ggml_tensor * mul = cgraph->nodes[node_idx];
++    if (!mul || mul->op != GGML_OP_MUL || (mul->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
++        return 0;
++    }
++    if (mul->type != GGML_TYPE_F32 ||
++        mul->ne[0] != 2048 || mul->ne[1] != 8 || mul->ne[2] != 1 || mul->ne[3] != 1 ||
++        mul->nb[0] != (int64_t) sizeof(float) || mul->nb[1] != 2048 * (int64_t) sizeof(float)) {
++        return 0;
++    }
++
++    const ggml_tensor * weighted = nullptr;
++    const ggml_tensor * weights  = nullptr;
++    for (int src_idx = 0; src_idx < 2; ++src_idx) {
++        const ggml_tensor * src = mul->src[src_idx];
++        if (!src || src->type != GGML_TYPE_F32) {
++            return 0;
++        }
++        if (src->op == GGML_OP_MUL_MAT_ID &&
++            src->ne[0] == 2048 && src->ne[1] == 8 && src->ne[2] == 1 && src->ne[3] == 1 &&
++            src->nb[0] == (int64_t) sizeof(float) && src->nb[1] == 2048 * (int64_t) sizeof(float)) {
++            weighted = src;
++        } else if (src->ne[0] == 1 && src->ne[1] == 8 && src->ne[2] == 1 && src->ne[3] == 1 &&
++            src->nb[0] == (int64_t) sizeof(float)) {
++            weights = src;
++        }
++    }
++    if (!weighted || !weights) {
++        return 0;
++    }
++
++    bool seen[8] = {};
++    ggml_tensor * prev = nullptr;
++    for (int add_idx = 0; add_idx < 7; ++add_idx) {
++        ggml_tensor * add = cgraph->nodes[node_idx + 1 + add_idx];
++        if (!add || add->op != GGML_OP_ADD || (add->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
++            return 0;
++        }
++        if (add->type != GGML_TYPE_F32 ||
++            add->ne[0] != 2048 || add->ne[1] != 1 || add->ne[2] != 1 || add->ne[3] != 1 ||
++            add->nb[0] != (int64_t) sizeof(float)) {
++            return 0;
++        }
++
++        const ggml_tensor * view = nullptr;
++        if (add_idx == 0) {
++            if (!ggml_sycl_moe_weighted_sum_view_index(add->src[0], mul, seen) ||
++                !ggml_sycl_moe_weighted_sum_view_index(add->src[1], mul, seen)) {
++                return 0;
++            }
++        } else {
++            if (add->src[0] == prev) {
++                view = add->src[1];
++            } else if (add->src[1] == prev) {
++                view = add->src[0];
++            } else {
++                return 0;
++            }
++            if (!ggml_sycl_moe_weighted_sum_view_index(view, mul, seen)) {
++                return 0;
++            }
++        }
++        prev = add;
++    }
++
++    for (int i = 0; i < 8; ++i) {
++        if (!seen[i]) {
++            return 0;
++        }
++    }
++
++    ggml_tensor * add0 = cgraph->nodes[node_idx + 8];
++    ggml_tensor * add1 = cgraph->nodes[node_idx + 9];
++    if (!add0 || !add1 ||
++        add0->op != GGML_OP_ADD || add1->op != GGML_OP_ADD ||
++        (add0->flags & GGML_TENSOR_FLAG_COMPUTE) == 0 ||
++        (add1->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
++        return 0;
++    }
++
++    if (add0->src[0] != prev && add0->src[1] != prev) {
++        return 0;
++    }
++    if (add1->src[0] != add0 && add1->src[1] != add0) {
++        return 0;
++    }
++
++    const ggml_tensor * add0_c = add0->src[0] == prev ? add0->src[1] : add0->src[0];
++    const ggml_tensor * add1_c = add1->src[0] == add0 ? add1->src[1] : add1->src[0];
++    if (!ggml_sycl_is_nx2_f32_vector(add0) || !ggml_sycl_is_nx2_f32_vector(add1) ||
++        !ggml_sycl_is_nx2_f32_vector(add0_c) || !ggml_sycl_is_nx2_f32_vector(add1_c)) {
++        return 0;
++    }
++    if (!ggml_sycl_fusion_memory_ranges_ok(cgraph, node_idx, 10, node_idx + 9)) {
++        return 0;
++    }
++
++    return ggml_sycl_moe_weighted_tail_8_f32(weighted, weights, add0_c, add1_c, add1, ctx.stream()) ? 9 : 0;
++}
++
++static bool ggml_sycl_is_nx2_f32_vector(const ggml_tensor * t) {
++    return t && t->type == GGML_TYPE_F32 &&
++        t->ne[0] == 2048 && t->ne[1] == 1 && t->ne[2] == 1 && t->ne[3] == 1 &&
++        t->nb[0] == (int64_t) sizeof(float) && ggml_is_contiguous(t);
++}
++
++static bool ggml_sycl_is_f32_scalar(const ggml_tensor * t) {
++    return t && t->type == GGML_TYPE_F32 &&
++        t->ne[0] == 1 && t->ne[1] == 1 && t->ne[2] == 1 && t->ne[3] == 1 &&
++        t->nb[0] == (int64_t) sizeof(float);
++}
++
++static bool ggml_sycl_rms_norm_mul_nx2_f32(
++    ggml_backend_sycl_context & ctx, const ggml_tensor * rms, const ggml_tensor * mul, bool write_q8) {
++    const ggml_tensor * x = rms->src[0];
++    const ggml_tensor * w = mul->src[0] == rms ? mul->src[1] : mul->src[0];
++    if (!ggml_sycl_is_nx2_f32_vector(x) ||
++        !ggml_sycl_is_nx2_f32_vector(rms) ||
++        !ggml_sycl_is_nx2_f32_vector(w) ||
++        !ggml_sycl_is_nx2_f32_vector(mul)) {
++        return false;
++    }
++
++    float eps;
++    memcpy(&eps, rms->op_params, sizeof(float));
++
++    const float * x_data = (const float *) x->data;
++    const float * w_data = (const float *) w->data;
++    float * out          = (float *) mul->data;
++
++    constexpr int ncols = 2048;
++    const int wg_size = g_ggml_sycl_enable_rms_norm_mul_fusion >= 2 ? 1024 : 512;
++    const int nwarps  = wg_size / WARP_SIZE;
++    char * q8_out = nullptr;
++    size_t q8_row_stride = 0;
++    if (write_q8) {
++        constexpr int src1_padded_cols = GGML_PAD(ncols, MATRIX_ROW_PADDING);
++        q8_row_stride = (size_t) src1_padded_cols * sizeof(block_q8_1) / QK8_1;
++        if (!ctx.moe_act_q8_alloc) {
++            ctx.moe_act_q8_alloc = std::make_unique<ggml_sycl_pool_alloc<char>>(ctx.pool());
++        }
++        if (!ctx.moe_act_q8 || ctx.moe_act_q8_size < q8_row_stride) {
++            ctx.moe_act_q8 = ctx.moe_act_q8_alloc->realloc(q8_row_stride);
++            ctx.moe_act_q8_size = ctx.moe_act_q8_alloc->actual_size;
++        }
++        q8_out = ctx.moe_act_q8;
++    }
++
++    dpct::queue_ptr stream = ctx.stream();
++
++    stream->submit([&](sycl::handler & cgh) {
++        sycl::local_accessor<float, 1> local_sums(sycl::range<1>(nwarps), cgh);
++        cgh.parallel_for(
++            sycl::nd_range<1>(sycl::range<1>(wg_size), sycl::range<1>(wg_size)),
++            [=](sycl::nd_item<1> item) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
++                const int tid = item.get_local_linear_id();
++                const sycl::sub_group sg = item.get_sub_group();
++                const int sg_id = sg.get_group_linear_id();
++                const int lane  = sg.get_local_linear_id();
++                const int sg_size = sg.get_local_range()[0];
++
++                float sumsq = 0.0f;
++                for (int col = tid; col < ncols; col += wg_size) {
++                    const float xi = x_data[col];
++                    sumsq += xi * xi;
++                }
++
++                sumsq = sycl::reduce_over_group(sg, sumsq, sycl::plus<>());
++                if (lane == 0) {
++                    local_sums[sg_id] = sumsq;
++                }
++                item.barrier(sycl::access::fence_space::local_space);
++
++                if (sg_id == 0) {
++                    float total = 0.0f;
++                    for (int idx = lane; idx < nwarps; idx += sg_size) {
++                        total += local_sums[idx];
++                    }
++                    total = sycl::reduce_over_group(sg, total, sycl::plus<>());
++                    if (lane == 0) {
++                        local_sums[0] = sycl::rsqrt(total / ncols + eps);
++                    }
++                }
++                item.barrier(sycl::access::fence_space::local_space);
++
++                const float scale = local_sums[0];
++                if (write_q8) {
++                    const int block = sg_id;
++                    if (block < ncols / QK8_1) {
++                        const int col0 = block * QK8_1 + lane * 2;
++                        const int col1 = col0 + 1;
++                        const float v0 = x_data[col0] * scale * w_data[col0];
++                        const float v1 = x_data[col1] * scale * w_data[col1];
++                        out[col0] = v0;
++                        out[col1] = v1;
++
++                        float sum = v0 + v1;
++                        float amax = sycl::fmax(sycl::fabs(v0), sycl::fabs(v1));
++                        sum = sycl::reduce_over_group(sg, sum, sycl::plus<>());
++                        amax = sycl::reduce_over_group(sg, amax, sycl::maximum<>());
++
++                        const float quant_d = amax == 0.0f ? 1.0f : amax / 127.0f;
++                        int8_t * qs = (int8_t *) q8_out + block * QK8_1 + lane * 2;
++                        qs[0] = (int8_t) sycl::round(v0 / quant_d);
++                        qs[1] = (int8_t) sycl::round(v1 / quant_d);
++
++                        if (lane == 0) {
++                            sycl::half2 * ds = (sycl::half2 *) (q8_out + ncols + block * sizeof(sycl::half2));
++                            *ds = sycl::half2(sycl::half(amax == 0.0f ? 0.0f : quant_d), sycl::half(sum));
++                        }
++                    }
++                } else {
++                    for (int col = tid; col < ncols; col += wg_size) {
++                        out[col] = x_data[col] * scale * w_data[col];
++                    }
++                }
++            });
++    });
++
++    if (write_q8) {
++        ctx.moe_act_q8_src = mul;
++        ctx.moe_act_q8_ne0 = ncols;
++        ctx.moe_act_q8_ne1 = 1;
++        ctx.moe_act_q8_row_stride = q8_row_stride;
++    }
++    return true;
++}
++
++static bool ggml_sycl_future_moe_gate_up_uses_src(
++    const ggml_cgraph * cgraph, int node_idx, const ggml_tensor * src) {
++    if (!src) {
++        return false;
++    }
++
++    const int last = cgraph->n_nodes - 3;
++    const int end  = node_idx + 40 < last ? node_idx + 40 : last;
++    for (int i = node_idx + 2; i <= end; ++i) {
++        const ggml_tensor * up   = cgraph->nodes[i];
++        const ggml_tensor * gate = cgraph->nodes[i + 1];
++        const ggml_tensor * glu  = cgraph->nodes[i + 2];
++        if (!ggml_sycl_should_fuse_moe_gate_up_swiglu(up, gate, glu)) {
++            continue;
++        }
++        const ggml_tensor * src1 = up->src[1];
++        if (ggml_sycl_tensor_matches_cached_q8_src(src1, src)) {
++            return true;
++        }
++    }
++    return false;
++}
++
++static int ggml_sycl_try_fuse_rms_norm_mul(ggml_backend_sycl_context & ctx, const ggml_cgraph * cgraph, int node_idx) {
++    if (!g_ggml_sycl_enable_rms_norm_mul_fusion || g_ggml_sycl_disable_optimize) {
++        return 0;
++    }
++    if (!ggml_can_fuse_subgraph(cgraph, node_idx,
++            { GGML_OP_RMS_NORM, GGML_OP_MUL }, { node_idx + 1 })) {
++        return 0;
++    }
++
++    ggml_tensor * rms = cgraph->nodes[node_idx];
++    ggml_tensor * mul = cgraph->nodes[node_idx + 1];
++    if (!rms || !mul || rms->op != GGML_OP_RMS_NORM || mul->op != GGML_OP_MUL ||
++        (mul->src[0] != rms && mul->src[1] != rms)) {
++        return 0;
++    }
++    if (mul->src[1] == rms && !ggml_are_same_shape(mul->src[0], rms)) {
++        return 0;
++    }
++    if (!ggml_sycl_fusion_memory_ranges_ok(cgraph, node_idx, 2, node_idx + 1)) {
++        return 0;
++    }
++
++    const bool write_q8 =
++        g_ggml_sycl_enable_rms_norm_mul_fusion == 3 ||
++        (g_ggml_sycl_enable_rms_norm_mul_fusion == 4 &&
++         ggml_sycl_future_moe_gate_up_uses_src(cgraph, node_idx, mul));
++    return ggml_sycl_rms_norm_mul_nx2_f32(ctx, rms, mul, write_q8) ? 1 : 0;
++}
++
++static bool ggml_sycl_moe_shared_gate_tail_f32(
++    const ggml_tensor * shexp, const ggml_tensor * gate,
++    const ggml_tensor * moe, const ggml_tensor * residual,
++    ggml_tensor * dst, dpct::queue_ptr stream) {
++    if (dst->nb[0] != (int64_t) sizeof(float)) {
++        return false;
++    }
++
++    const float * shexp_data    = (const float *) shexp->data;
++    const float * gate_data     = (const float *) gate->data;
++    const float * moe_data      = (const float *) moe->data;
++    const float * residual_data = (const float *) residual->data;
++    float * out                 = (float *) dst->data;
++
++    stream->parallel_for(sycl::range<1>(2048), [=](sycl::id<1> tid) {
++        const size_t row = tid[0];
++        out[row] = moe_data[row] + shexp_data[row] * gate_data[0] + residual_data[row];
++    });
++    return true;
++}
++
++static bool ggml_sycl_moe_shared_gate_tail_f32_vec4(
++    const ggml_tensor * shexp, const ggml_tensor * gate,
++    const ggml_tensor * moe, const ggml_tensor * residual,
++    ggml_tensor * dst, dpct::queue_ptr stream) {
++    if (dst->nb[0] != (int64_t) sizeof(float) ||
++        shexp->nb[0] != (int64_t) sizeof(float) ||
++        moe->nb[0] != (int64_t) sizeof(float) ||
++        residual->nb[0] != (int64_t) sizeof(float)) {
++        return false;
++    }
++
++    const float * shexp_data    = (const float *) shexp->data;
++    const float * gate_data     = (const float *) gate->data;
++    const float * moe_data      = (const float *) moe->data;
++    const float * residual_data = (const float *) residual->data;
++    float * out                 = (float *) dst->data;
++
++    stream->parallel_for(sycl::range<1>(512), [=](sycl::id<1> tid) {
++        const size_t row = tid[0] * 4;
++        const sycl::float4 shexp_v    = *(const sycl::float4 *) (shexp_data + row);
++        const sycl::float4 moe_v      = *(const sycl::float4 *) (moe_data + row);
++        const sycl::float4 residual_v = *(const sycl::float4 *) (residual_data + row);
++        *(sycl::float4 *) (out + row) = moe_v + shexp_v * gate_data[0] + residual_v;
++    });
++    return true;
++}
++
++static bool ggml_sycl_moe_shared_gate_tail_f32_local_gate(
++    const ggml_tensor * shexp, const ggml_tensor * gate,
++    const ggml_tensor * moe, const ggml_tensor * residual,
++    ggml_tensor * dst, dpct::queue_ptr stream) {
++    if (dst->nb[0] != (int64_t) sizeof(float)) {
++        return false;
++    }
++
++    const float * shexp_data    = (const float *) shexp->data;
++    const float * gate_data     = (const float *) gate->data;
++    const float * moe_data      = (const float *) moe->data;
++    const float * residual_data = (const float *) residual->data;
++    float * out                 = (float *) dst->data;
++
++    constexpr int wg_size = 512;
++    stream->submit([&](sycl::handler & cgh) {
++        sycl::local_accessor<float, 1> gate_local(sycl::range<1>(1), cgh);
++        cgh.parallel_for(
++            sycl::nd_range<1>(sycl::range<1>(2048), sycl::range<1>(wg_size)),
++            [=](sycl::nd_item<1> item) {
++                if (item.get_local_linear_id() == 0) {
++                    gate_local[0] = gate_data[0];
++                }
++                item.barrier(sycl::access::fence_space::local_space);
++
++                const size_t row = item.get_global_linear_id();
++                out[row] = moe_data[row] + shexp_data[row] * gate_local[0] + residual_data[row];
++            });
++    });
++    return true;
++}
++
++static bool ggml_sycl_moe_shared_gate_tail_f32_vec4_local_gate(
++    const ggml_tensor * shexp, const ggml_tensor * gate,
++    const ggml_tensor * moe, const ggml_tensor * residual,
++    ggml_tensor * dst, dpct::queue_ptr stream) {
++    if (dst->nb[0] != (int64_t) sizeof(float) ||
++        shexp->nb[0] != (int64_t) sizeof(float) ||
++        moe->nb[0] != (int64_t) sizeof(float) ||
++        residual->nb[0] != (int64_t) sizeof(float)) {
++        return false;
++    }
++
++    const float * shexp_data    = (const float *) shexp->data;
++    const float * gate_data     = (const float *) gate->data;
++    const float * moe_data      = (const float *) moe->data;
++    const float * residual_data = (const float *) residual->data;
++    float * out                 = (float *) dst->data;
++
++    constexpr int wg_size = 512;
++    stream->submit([&](sycl::handler & cgh) {
++        sycl::local_accessor<float, 1> gate_local(sycl::range<1>(1), cgh);
++        cgh.parallel_for(
++            sycl::nd_range<1>(sycl::range<1>(512), sycl::range<1>(wg_size)),
++            [=](sycl::nd_item<1> item) {
++                if (item.get_local_linear_id() == 0) {
++                    gate_local[0] = gate_data[0];
++                }
++                item.barrier(sycl::access::fence_space::local_space);
++
++                const float gate_v = gate_local[0];
++                const size_t row = item.get_global_linear_id() * 4;
++                const sycl::float4 shexp_v    = *(const sycl::float4 *) (shexp_data + row);
++                const sycl::float4 moe_v      = *(const sycl::float4 *) (moe_data + row);
++                const sycl::float4 residual_v = *(const sycl::float4 *) (residual_data + row);
++                *(sycl::float4 *) (out + row) = moe_v + shexp_v * gate_v + residual_v;
++            });
++    });
++    return true;
++}
++
++static bool ggml_sycl_moe_shared_gate_sigmoid_tail_f32(
++    const ggml_tensor * shexp, const ggml_tensor * gate_logit,
++    const ggml_tensor * moe, const ggml_tensor * residual,
++    ggml_tensor * dst, dpct::queue_ptr stream) {
++    if (dst->nb[0] != (int64_t) sizeof(float)) {
++        return false;
++    }
++
++    const float * shexp_data    = (const float *) shexp->data;
++    const float * gate_data     = (const float *) gate_logit->data;
++    const float * moe_data      = (const float *) moe->data;
++    const float * residual_data = (const float *) residual->data;
++    float * out                 = (float *) dst->data;
++
++    constexpr int wg_size = 512;
++    stream->submit([&](sycl::handler & cgh) {
++        sycl::local_accessor<float, 1> gate_local(sycl::range<1>(1), cgh);
++        cgh.parallel_for(
++            sycl::nd_range<1>(sycl::range<1>(2048), sycl::range<1>(wg_size)),
++            [=](sycl::nd_item<1> item) {
++                if (item.get_local_linear_id() == 0) {
++                    gate_local[0] = 1.0f / (1.0f + sycl::native::exp(-gate_data[0]));
++                }
++                item.barrier(sycl::access::fence_space::local_space);
++
++                const float gate = gate_local[0];
++                const size_t row = item.get_global_linear_id();
++                out[row] = moe_data[row] + shexp_data[row] * gate + residual_data[row];
++            });
++    });
++    return true;
++}
++
++static bool ggml_sycl_moe_shared_gate_sigmoid_tail_f32_vec4(
++    const ggml_tensor * shexp, const ggml_tensor * gate_logit,
++    const ggml_tensor * moe, const ggml_tensor * residual,
++    ggml_tensor * dst, dpct::queue_ptr stream) {
++    if (dst->nb[0] != (int64_t) sizeof(float) ||
++        shexp->nb[0] != (int64_t) sizeof(float) ||
++        moe->nb[0] != (int64_t) sizeof(float) ||
++        residual->nb[0] != (int64_t) sizeof(float)) {
++        return false;
++    }
++
++    const float * shexp_data    = (const float *) shexp->data;
++    const float * gate_data     = (const float *) gate_logit->data;
++    const float * moe_data      = (const float *) moe->data;
++    const float * residual_data = (const float *) residual->data;
++    float * out                 = (float *) dst->data;
++
++    constexpr int wg_size = 512;
++    stream->submit([&](sycl::handler & cgh) {
++        sycl::local_accessor<float, 1> gate_local(sycl::range<1>(1), cgh);
++        cgh.parallel_for(
++            sycl::nd_range<1>(sycl::range<1>(512), sycl::range<1>(wg_size)),
++            [=](sycl::nd_item<1> item) {
++                if (item.get_local_linear_id() == 0) {
++                    gate_local[0] = 1.0f / (1.0f + sycl::native::exp(-gate_data[0]));
++                }
++                item.barrier(sycl::access::fence_space::local_space);
++
++                const float gate = gate_local[0];
++                const size_t row = item.get_global_linear_id() * 4;
++                const sycl::float4 shexp_v    = *(const sycl::float4 *) (shexp_data + row);
++                const sycl::float4 moe_v      = *(const sycl::float4 *) (moe_data + row);
++                const sycl::float4 residual_v = *(const sycl::float4 *) (residual_data + row);
++                *(sycl::float4 *) (out + row) = moe_v + shexp_v * gate + residual_v;
++            });
++    });
++    return true;
++}
++
++static int ggml_sycl_try_fuse_moe_shared_gate_tail(ggml_backend_sycl_context & ctx, const ggml_cgraph * cgraph, int node_idx) {
++    if (g_ggml_sycl_enable_moe_shared_gate_tail_fusion <= 0 ||
++        (g_ggml_sycl_enable_moe_shared_gate_tail_fusion > 2 &&
++         g_ggml_sycl_enable_moe_shared_gate_tail_fusion < 5) ||
++        g_ggml_sycl_enable_moe_shared_gate_tail_fusion > 6 ||
++        g_ggml_sycl_disable_optimize) {
++        return 0;
++    }
++    if (!ggml_can_fuse_subgraph(cgraph, node_idx,
++            { GGML_OP_MUL, GGML_OP_ADD, GGML_OP_ADD }, { node_idx + 2 })) {
++        return 0;
++    }
++
++    ggml_tensor * mul  = cgraph->nodes[node_idx];
++    ggml_tensor * add0 = cgraph->nodes[node_idx + 1];
++    ggml_tensor * add1 = cgraph->nodes[node_idx + 2];
++    if (!mul || !add0 || !add1 ||
++        (add0->src[0] != mul && add0->src[1] != mul) ||
++        (add1->src[0] != add0 && add1->src[1] != add0)) {
++        return 0;
++    }
++
++    const ggml_tensor * shexp = nullptr;
++    const ggml_tensor * gate  = nullptr;
++    if (ggml_sycl_is_nx2_f32_vector(mul->src[0]) && ggml_sycl_is_f32_scalar(mul->src[1])) {
++        shexp = mul->src[0];
++        gate  = mul->src[1];
++    } else if (ggml_sycl_is_nx2_f32_vector(mul->src[1]) && ggml_sycl_is_f32_scalar(mul->src[0])) {
++        shexp = mul->src[1];
++        gate  = mul->src[0];
+     } else {
+-        quantize_row_q8_1_sycl<quantize_q8_1>(
+-            (const float *) src1->data, src1_ddq, (int) ne10, (int) ne11,
+-            src1_padded_cols, stream);
++        return 0;
+     }
+
+-    const size_t bytes_per_qrow = (size_t) src1_padded_cols * sizeof(block_q8_1) / QK8_1;
+-    const size_t src1_row_stride = (ne11 == 1) ? 0 : bytes_per_qrow;
++    const ggml_tensor * moe      = add0->src[0] == mul ? add0->src[1] : add0->src[0];
++    const ggml_tensor * residual = add1->src[0] == add0 ? add1->src[1] : add1->src[0];
++    if (!ggml_sycl_is_nx2_f32_vector(mul) ||
++        !ggml_sycl_is_nx2_f32_vector(add0) ||
++        !ggml_sycl_is_nx2_f32_vector(add1) ||
++        !ggml_sycl_is_nx2_f32_vector(moe) ||
++        !ggml_sycl_is_nx2_f32_vector(residual)) {
++        return 0;
++    }
++    if (!ggml_sycl_fusion_memory_ranges_ok(cgraph, node_idx, 3, node_idx + 2)) {
++        return 0;
++    }
+
+-    if (use_reorder) {
+-        return ggml_sycl_mul_mat_vec_q_id_reorder(
+-            src0->type, src0->data, src1_ddq, (const int32_t *) ids->data,
+-            (float *) dst->data, (int) ne10, nrows, n_experts_used,
+-            /*expert_weight_stride=*/ src0->nb[2],
+-            /*dst_row_stride=*/ dst->nb[1],
+-            src1_row_stride, stream);
++    if (g_ggml_sycl_enable_moe_shared_gate_tail_fusion == 6) {
++        return ggml_sycl_moe_shared_gate_tail_f32_vec4_local_gate(shexp, gate, moe, residual, add1, ctx.stream()) ? 2 : 0;
+     }
+-    return ggml_sycl_mul_mat_vec_q_id(
+-        src0->type, src0->data, src1_ddq, (const int32_t *) ids->data,
+-        (float *) dst->data, (int) ne10, nrows, n_experts_used,
+-        /*expert_weight_stride=*/ src0->nb[2],
+-        /*dst_row_stride=*/ dst->nb[1],
+-        src1_row_stride, stream);
++    if (g_ggml_sycl_enable_moe_shared_gate_tail_fusion == 5) {
++        return ggml_sycl_moe_shared_gate_tail_f32_local_gate(shexp, gate, moe, residual, add1, ctx.stream()) ? 2 : 0;
++    }
++    if (g_ggml_sycl_enable_moe_shared_gate_tail_fusion == 2) {
++        return ggml_sycl_moe_shared_gate_tail_f32_vec4(shexp, gate, moe, residual, add1, ctx.stream()) ? 2 : 0;
++    }
++
++    return ggml_sycl_moe_shared_gate_tail_f32(shexp, gate, moe, residual, add1, ctx.stream()) ? 2 : 0;
++}
++
++static int ggml_sycl_try_fuse_moe_shared_gate_sigmoid_tail(ggml_backend_sycl_context & ctx, const ggml_cgraph * cgraph, int node_idx) {
++    if (g_ggml_sycl_enable_moe_shared_gate_tail_fusion < 3 ||
++        g_ggml_sycl_enable_moe_shared_gate_tail_fusion > 4 ||
++        g_ggml_sycl_disable_optimize) {
++        return 0;
++    }
++    if (!ggml_can_fuse_subgraph(cgraph, node_idx,
++            { GGML_OP_UNARY, GGML_OP_MUL, GGML_OP_ADD, GGML_OP_ADD }, { node_idx + 3 })) {
++        return 0;
++    }
++
++    ggml_tensor * sigmoid = cgraph->nodes[node_idx];
++    ggml_tensor * mul     = cgraph->nodes[node_idx + 1];
++    ggml_tensor * add0    = cgraph->nodes[node_idx + 2];
++    ggml_tensor * add1    = cgraph->nodes[node_idx + 3];
++    if (!sigmoid || !mul || !add0 || !add1 ||
++        ggml_get_unary_op(sigmoid) != GGML_UNARY_OP_SIGMOID ||
++        (mul->src[0] != sigmoid && mul->src[1] != sigmoid) ||
++        (add0->src[0] != mul && add0->src[1] != mul) ||
++        (add1->src[0] != add0 && add1->src[1] != add0)) {
++        return 0;
++    }
++
++    const ggml_tensor * gate_logit = sigmoid->src[0];
++    const ggml_tensor * shexp      = mul->src[0] == sigmoid ? mul->src[1] : mul->src[0];
++    const ggml_tensor * moe        = add0->src[0] == mul ? add0->src[1] : add0->src[0];
++    const ggml_tensor * residual   = add1->src[0] == add0 ? add1->src[1] : add1->src[0];
++    if (!ggml_sycl_is_f32_scalar(gate_logit) ||
++        !ggml_sycl_is_f32_scalar(sigmoid) ||
++        !ggml_sycl_is_nx2_f32_vector(shexp) ||
++        !ggml_sycl_is_nx2_f32_vector(mul) ||
++        !ggml_sycl_is_nx2_f32_vector(add0) ||
++        !ggml_sycl_is_nx2_f32_vector(add1) ||
++        !ggml_sycl_is_nx2_f32_vector(moe) ||
++        !ggml_sycl_is_nx2_f32_vector(residual)) {
++        return 0;
++    }
++    if (!ggml_sycl_fusion_memory_ranges_ok(cgraph, node_idx, 4, node_idx + 3)) {
++        return 0;
++    }
++
++    if (g_ggml_sycl_enable_moe_shared_gate_tail_fusion == 4) {
++        return ggml_sycl_moe_shared_gate_sigmoid_tail_f32_vec4(shexp, gate_logit, moe, residual, add1, ctx.stream()) ? 3 : 0;
++    }
++
++    return ggml_sycl_moe_shared_gate_sigmoid_tail_f32(shexp, gate_logit, moe, residual, add1, ctx.stream()) ? 3 : 0;
++}
++
++static bool ggml_sycl_moe_tail_add_2_f32(
++    const ggml_tensor * add0, const ggml_tensor * add1, ggml_tensor * dst,
++    dpct::queue_ptr stream) {
++    const ggml_tensor * add0_a = add0->src[0];
++    const ggml_tensor * add0_b = add0->src[1];
++    const ggml_tensor * add1_c = add1->src[0] == add0 ? add1->src[1] : add1->src[0];
++
++    const float * a = (const float *) add0_a->data;
++    const float * b = (const float *) add0_b->data;
++    const float * c = (const float *) add1_c->data;
++    float * out     = (float *) dst->data;
++
++    const bool add0_is_src0 = add1->src[0] == add0;
++    stream->parallel_for(sycl::range<1>(2048), [=](sycl::id<1> tid) {
++        const size_t i = tid[0];
++        const float ab = a[i] + b[i];
++        out[i] = add0_is_src0 ? (ab + c[i]) : (c[i] + ab);
++    });
++    return true;
++}
++
++static bool ggml_sycl_moe_tail_add_2_f32_vec4(
++    const ggml_tensor * add0, const ggml_tensor * add1, ggml_tensor * dst,
++    dpct::queue_ptr stream) {
++    if (add0->src[0]->nb[0] != (int64_t) sizeof(float) ||
++        add0->src[1]->nb[0] != (int64_t) sizeof(float) ||
++        dst->nb[0] != (int64_t) sizeof(float)) {
++        return false;
++    }
++
++    const ggml_tensor * add0_a = add0->src[0];
++    const ggml_tensor * add0_b = add0->src[1];
++    const ggml_tensor * add1_c = add1->src[0] == add0 ? add1->src[1] : add1->src[0];
++
++    if (add1_c->nb[0] != (int64_t) sizeof(float)) {
++        return false;
++    }
++
++    const float * a = (const float *) add0_a->data;
++    const float * b = (const float *) add0_b->data;
++    const float * c = (const float *) add1_c->data;
++    float * out     = (float *) dst->data;
++
++    stream->parallel_for(sycl::range<1>(512), [=](sycl::id<1> tid) {
++        const size_t row = tid[0] * 4;
++        const sycl::float4 va = *(const sycl::float4 *) (a + row);
++        const sycl::float4 vb = *(const sycl::float4 *) (b + row);
++        const sycl::float4 vc = *(const sycl::float4 *) (c + row);
++        *(sycl::float4 *) (out + row) = va + vb + vc;
++    });
++    return true;
++}
++
++static bool ggml_sycl_moe_tail_add_rms_norm_2_f32(
++    const ggml_tensor * add0, const ggml_tensor * add1, ggml_tensor * rms,
++    dpct::queue_ptr stream) {
++    if (add1->data == rms->data) {
++        return false;
++    }
++
++    const ggml_tensor * add0_a = add0->src[0];
++    const ggml_tensor * add0_b = add0->src[1];
++    const ggml_tensor * add1_c = add1->src[0] == add0 ? add1->src[1] : add1->src[0];
++
++    const float * a       = (const float *) add0_a->data;
++    const float * b       = (const float *) add0_b->data;
++    const float * c       = (const float *) add1_c->data;
++    float * residual_out  = (float *) add1->data;
++    float * rms_out       = (float *) rms->data;
++
++    float eps;
++    memcpy(&eps, rms->op_params, sizeof(float));
++    const bool add0_is_src0 = add1->src[0] == add0;
++
++    constexpr int ncols   = 2048;
++    constexpr int wg_size = 512;
++    constexpr int nwarps  = wg_size / WARP_SIZE;
++
++    stream->submit([&](sycl::handler & cgh) {
++        sycl::local_accessor<float, 1> local_sums(sycl::range<1>(nwarps), cgh);
++        cgh.parallel_for(
++            sycl::nd_range<1>(sycl::range<1>(wg_size), sycl::range<1>(wg_size)),
++            [=](sycl::nd_item<1> item) {
++                const int tid = item.get_local_linear_id();
++                const sycl::sub_group sg = item.get_sub_group();
++                const int sg_id = sg.get_group_linear_id();
++                const int lane  = sg.get_local_linear_id();
++                const int sg_size = sg.get_local_range()[0];
++
++                float sumsq = 0.0f;
++                for (int col = tid; col < ncols; col += wg_size) {
++                    const float ab = a[col] + b[col];
++                    const float x = add0_is_src0 ? (ab + c[col]) : (c[col] + ab);
++                    residual_out[col] = x;
++                    sumsq += x * x;
++                }
++
++                sumsq = sycl::reduce_over_group(sg, sumsq, sycl::plus<>());
++                if (lane == 0) {
++                    local_sums[sg_id] = sumsq;
++                }
++                item.barrier(sycl::access::fence_space::local_space);
++
++                if (sg_id == 0) {
++                    float total = 0.0f;
++                    for (int idx = lane; idx < nwarps; idx += sg_size) {
++                        total += local_sums[idx];
++                    }
++                    total = sycl::reduce_over_group(sg, total, sycl::plus<>());
++                    if (lane == 0) {
++                        local_sums[0] = sycl::rsqrt(total / ncols + eps);
++                    }
++                }
++                item.barrier(sycl::access::fence_space::local_space);
++
++                const float scale = local_sums[0];
++                for (int col = tid; col < ncols; col += wg_size) {
++                    rms_out[col] = residual_out[col] * scale;
++                }
++            });
++    });
++    return true;
++}
++
++static int ggml_sycl_try_fuse_moe_tail_add_rms_norm(ggml_backend_sycl_context & ctx, const ggml_cgraph * cgraph, int node_idx) {
++    if (!g_ggml_sycl_enable_moe_tail_rms_fusion || g_ggml_sycl_disable_optimize) {
++        return 0;
++    }
++    if (!ggml_can_fuse_subgraph(cgraph, node_idx,
++            { GGML_OP_ADD, GGML_OP_ADD, GGML_OP_RMS_NORM }, { node_idx + 1, node_idx + 2 })) {
++        return 0;
++    }
++
++    ggml_tensor * add0 = cgraph->nodes[node_idx];
++    ggml_tensor * add1 = cgraph->nodes[node_idx + 1];
++    ggml_tensor * rms  = cgraph->nodes[node_idx + 2];
++    if (!add0 || !add1 || !rms ||
++        add1->op != GGML_OP_ADD || rms->op != GGML_OP_RMS_NORM ||
++        (add1->src[0] != add0 && add1->src[1] != add0) ||
++        rms->src[0] != add1) {
++        return 0;
++    }
++
++    const ggml_tensor * add1_c = add1->src[0] == add0 ? add1->src[1] : add1->src[0];
++    if (!ggml_sycl_is_nx2_f32_vector(add0) || !ggml_sycl_is_nx2_f32_vector(add1) ||
++        !ggml_sycl_is_nx2_f32_vector(rms) ||
++        !ggml_sycl_is_nx2_f32_vector(add0->src[0]) || !ggml_sycl_is_nx2_f32_vector(add0->src[1]) ||
++        !ggml_sycl_is_nx2_f32_vector(add1_c)) {
++        return 0;
++    }
++    if (!ggml_sycl_fusion_memory_ranges_ok(cgraph, node_idx, 3, node_idx + 1) ||
++        !ggml_sycl_fusion_memory_ranges_ok(cgraph, node_idx, 3, node_idx + 2)) {
++        return 0;
++    }
++
++    return ggml_sycl_moe_tail_add_rms_norm_2_f32(add0, add1, rms, ctx.stream()) ? 2 : 0;
++}
++
++static int ggml_sycl_try_fuse_moe_tail_add(ggml_backend_sycl_context & ctx, const ggml_cgraph * cgraph, int node_idx) {
++    if (!g_ggml_sycl_enable_moe_tail_add_fusion || g_ggml_sycl_disable_optimize) {
++        return 0;
++    }
++    if (!ggml_can_fuse_subgraph(cgraph, node_idx,
++            { GGML_OP_ADD, GGML_OP_ADD }, { node_idx + 1 })) {
++        return 0;
++    }
++
++    ggml_tensor * add0 = cgraph->nodes[node_idx];
++    ggml_tensor * add1 = cgraph->nodes[node_idx + 1];
++    if (add1->src[0] != add0 && add1->src[1] != add0) {
++        return 0;
++    }
++
++    const ggml_tensor * add1_c = add1->src[0] == add0 ? add1->src[1] : add1->src[0];
++    if (!ggml_sycl_is_nx2_f32_vector(add0) || !ggml_sycl_is_nx2_f32_vector(add1) ||
++        !ggml_sycl_is_nx2_f32_vector(add0->src[0]) || !ggml_sycl_is_nx2_f32_vector(add0->src[1]) ||
++        !ggml_sycl_is_nx2_f32_vector(add1_c)) {
++        return 0;
++    }
++    if (!ggml_sycl_fusion_memory_ranges_ok(cgraph, node_idx, 2, node_idx + 1)) {
++        return 0;
++    }
++
++    if (g_ggml_sycl_enable_moe_tail_add_fusion == 2) {
++        return ggml_sycl_moe_tail_add_2_f32_vec4(add0, add1, add1, ctx.stream()) ? 1 : 0;
++    }
++
++    return ggml_sycl_moe_tail_add_2_f32(add0, add1, add1, ctx.stream()) ? 1 : 0;
+ }
+
+ // Graph-safety mirror of ggml_sycl_mul_mat_id_mmvq_fused: true when this MUL_MAT_ID node will
+@@ -5203,6 +6887,8 @@ catch (sycl::exception const &exc) {
+
+ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * sycl_ctx, ggml_cgraph * cgraph) {
+     ggml_sycl_set_main_device(sycl_ctx->device);
++    sycl_ctx->moe_gate_up_q8_src = nullptr;
++    sycl_ctx->moe_act_q8_src = nullptr;
+
+     for (int i = 0; i < cgraph->n_nodes; i++) {
+         ggml_tensor * node = cgraph->nodes[i];
+@@ -5220,6 +6906,98 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
+             }
+         }
+ #endif
++        if (g_ggml_sycl_enable_moe_dispatch_guard) {
++            int fused_skip = 0;
++            switch (node->op) {
++                case GGML_OP_MUL_MAT_ID:
++                    fused_skip = ggml_sycl_try_fuse_moe_gate_up_glu(*sycl_ctx, cgraph, i);
++                    if (fused_skip == 0) {
++                        fused_skip = ggml_sycl_try_fuse_moe_down_weighted_sum(*sycl_ctx, cgraph, i);
++                    }
++                    break;
++                case GGML_OP_MUL_MAT:
++                    fused_skip = ggml_sycl_try_fuse_moe_shared_gate_up_glu(*sycl_ctx, cgraph, i);
++                    break;
++                case GGML_OP_MUL:
++                    fused_skip = ggml_sycl_try_fuse_moe_shared_gate_tail(*sycl_ctx, cgraph, i);
++                    if (fused_skip == 0) {
++                        fused_skip = ggml_sycl_try_fuse_moe_weighted_tail(*sycl_ctx, cgraph, i);
++                    }
++                    if (fused_skip == 0) {
++                        fused_skip = ggml_sycl_try_fuse_moe_weighted_sum(*sycl_ctx, cgraph, i);
++                    }
++                    break;
++                case GGML_OP_ADD:
++                    fused_skip = ggml_sycl_try_fuse_moe_tail_add_rms_norm(*sycl_ctx, cgraph, i);
++                    if (fused_skip == 0) {
++                        fused_skip = ggml_sycl_try_fuse_moe_tail_add(*sycl_ctx, cgraph, i);
++                    }
++                    break;
++                case GGML_OP_UNARY:
++                    fused_skip = ggml_sycl_try_fuse_moe_shared_gate_sigmoid_tail(*sycl_ctx, cgraph, i);
++                    break;
++                case GGML_OP_RMS_NORM:
++                    fused_skip = ggml_sycl_try_fuse_rms_norm_mul(*sycl_ctx, cgraph, i);
++                    break;
++                default:
++                    break;
++            }
++            if (fused_skip > 0) {
++                i += fused_skip;
++                continue;
++            }
++        } else {
++            const int rms_mul_skip = ggml_sycl_try_fuse_rms_norm_mul(*sycl_ctx, cgraph, i);
++            if (rms_mul_skip > 0) {
++                i += rms_mul_skip;
++                continue;
++            }
++            const int fused_skip = ggml_sycl_try_fuse_moe_gate_up_glu(*sycl_ctx, cgraph, i);
++            if (fused_skip > 0) {
++                i += fused_skip;
++                continue;
++            }
++            const int shared_skip = ggml_sycl_try_fuse_moe_shared_gate_up_glu(*sycl_ctx, cgraph, i);
++            if (shared_skip > 0) {
++                i += shared_skip;
++                continue;
++            }
++            const int down_weighted_skip = ggml_sycl_try_fuse_moe_down_weighted_sum(*sycl_ctx, cgraph, i);
++            if (down_weighted_skip > 0) {
++                i += down_weighted_skip;
++                continue;
++            }
++            const int shared_gate_sigmoid_tail_skip = ggml_sycl_try_fuse_moe_shared_gate_sigmoid_tail(*sycl_ctx, cgraph, i);
++            if (shared_gate_sigmoid_tail_skip > 0) {
++                i += shared_gate_sigmoid_tail_skip;
++                continue;
++            }
++            const int shared_gate_tail_skip = ggml_sycl_try_fuse_moe_shared_gate_tail(*sycl_ctx, cgraph, i);
++            if (shared_gate_tail_skip > 0) {
++                i += shared_gate_tail_skip;
++                continue;
++            }
++            const int weighted_tail_skip = ggml_sycl_try_fuse_moe_weighted_tail(*sycl_ctx, cgraph, i);
++            if (weighted_tail_skip > 0) {
++                i += weighted_tail_skip;
++                continue;
++            }
++            const int weighted_skip = ggml_sycl_try_fuse_moe_weighted_sum(*sycl_ctx, cgraph, i);
++            if (weighted_skip > 0) {
++                i += weighted_skip;
++                continue;
++            }
++            const int tail_rms_skip = ggml_sycl_try_fuse_moe_tail_add_rms_norm(*sycl_ctx, cgraph, i);
++            if (tail_rms_skip > 0) {
++                i += tail_rms_skip;
++                continue;
++            }
++            const int tail_add_skip = ggml_sycl_try_fuse_moe_tail_add(*sycl_ctx, cgraph, i);
++            if (tail_add_skip > 0) {
++                i += tail_add_skip;
++                continue;
++            }
++        }
+         bool ok = ggml_sycl_compute_forward(*sycl_ctx, node);
+         if (!ok) {
+             GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
+diff --git a/ggml/src/ggml-sycl/mmvq.cpp b/ggml/src/ggml-sycl/mmvq.cpp
+index 26176037f..2316ec5a3 100644
+--- a/ggml/src/ggml-sycl/mmvq.cpp
++++ b/ggml/src/ggml-sycl/mmvq.cpp
+@@ -2554,6 +2554,166 @@ static void launch_mul_mat_vec_q_moe_reorder(
+     });
+ }
+
++template <typename reorder_vec_dot_q_sycl, int ncols_t, int nrows_t>
++static void mul_mat_vec_q_moe_reorder_nx2(
++    const void * __restrict__ vx_base, const void * __restrict__ vy_base,
++    float * __restrict__ dst_base, const int32_t * __restrict__ ids_dev,
++    const size_t expert_weight_stride, const size_t dst_row_stride,
++    const size_t src1_row_stride, const sycl::nd_item<3> & item_ct1) {
++    using block_type   = ggml_sycl_reordered::block_q_t<reorder_vec_dot_q_sycl::gtype>;
++    using block_traits = typename block_type::traits;
++
++    constexpr int blocks_per_row              = ncols_t / block_traits::qk;
++    constexpr int nblocks                     = nrows_t * blocks_per_row;
++    constexpr int blocks_per_subgroup         = ceil_div(block_traits::vdr_mmvq * WARP_SIZE, block_traits::qi);
++    constexpr int block_elements_per_subgroup = block_traits::qi / block_traits::vdr_mmvq;
++
++    static_assert(ncols_t == 2048);
++    static_assert(nrows_t == 512);
++    static_assert(blocks_per_row == 8);
++    static_assert(blocks_per_subgroup == 1);
++    static_assert(block_elements_per_subgroup == WARP_SIZE);
++
++    const int expert_idx = item_ct1.get_group(1);
++    const int i02        = ids_dev[expert_idx];
++
++    const char * vx  = (const char *) vx_base + (size_t) i02 * expert_weight_stride;
++    const char * vy  = (const char *) vy_base + (size_t) expert_idx * src1_row_stride;
++    float *      dst = (float *) ((char *) dst_base + (size_t) expert_idx * dst_row_stride);
++
++    const int row = item_ct1.get_group(2) * item_ct1.get_local_range(1) + item_ct1.get_local_id(1);
++    if (row >= nrows_t) {
++        return;
++    }
++
++    const auto sg  = item_ct1.get_sub_group();
++    const int  iqs = block_traits::vdr_mmvq * sg.get_local_linear_id();
++
++    float partial_sum = 0.0f;
++#pragma unroll
++    for (int i = 0; i < blocks_per_row; ++i) {
++        const int ibx = row * blocks_per_row + i;
++
++        const auto bx_offset = block_type::get_block_offset(ibx, nblocks);
++        const auto d_offset  = block_type::get_d_offset(nrows_t, ncols_t, ibx);
++
++        const int           iby            = i * block_type::block_to_q8_1_ratio();
++        const int8_t *      q8_1_quant_ptr = (const int8_t *) vy + iby * QK8_1;
++        const sycl::half2 * q8_1_ds_ptr    = (const sycl::half2 *) ((const char *) vy + ncols_t + iby * sizeof(sycl::half2));
++
++        partial_sum += reorder_vec_dot_q_sycl()(vx, bx_offset, d_offset, q8_1_quant_ptr, q8_1_ds_ptr, iqs);
++    }
++
++    auto sum = sycl::reduce_over_group(sg, partial_sum, std::plus<>());
++    if (sg.leader()) {
++        dst[row] = sum;
++    }
++}
++
++template <typename reorder_vec_dot_q_sycl>
++static void launch_mul_mat_vec_q_moe_reorder_nx2(
++    const void * vx_base, const void * vy, const int32_t * ids_dev,
++    float * dst_base, const int n_experts_used,
++    const size_t expert_weight_stride, const size_t dst_row_stride,
++    const size_t src1_row_stride, dpct::queue_ptr stream) {
++    constexpr int ncols = 2048;
++    constexpr int nrows = 512;
++
++    const int            block_num_y = (nrows + GGML_SYCL_MMV_Y - 1) / GGML_SYCL_MMV_Y;
++    const sycl::range<3> block_nums(1, (unsigned) n_experts_used, (unsigned) block_num_y);
++    const sycl::range<3> block_dims(1, GGML_SYCL_MMV_Y, WARP_SIZE);
++    stream->submit([&](sycl::handler & cgh) {
++        cgh.parallel_for(
++            sycl::nd_range<3>(block_nums * block_dims, block_dims),
++            [=](sycl::nd_item<3> item) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
++                mul_mat_vec_q_moe_reorder_nx2<reorder_vec_dot_q_sycl, ncols, nrows>(
++                    vx_base, vy, dst_base, ids_dev, expert_weight_stride,
++                    dst_row_stride, src1_row_stride, item);
++            });
++    });
++}
++
++template <typename reorder_vec_dot_q_sycl, int ncols_t, int nrows_t>
++static void mul_mat_vec_q_moe_reorder_nx2_down_q6(
++    const void * __restrict__ vx_base, const void * __restrict__ vy_base,
++    float * __restrict__ dst_base, const int32_t * __restrict__ ids_dev,
++    const size_t expert_weight_stride, const size_t dst_row_stride,
++    const size_t src1_row_stride, const sycl::nd_item<3> & item_ct1) {
++    using block_type   = ggml_sycl_reordered::block_q_t<reorder_vec_dot_q_sycl::gtype>;
++    using block_traits = typename block_type::traits;
++
++    constexpr int blocks_per_row              = ncols_t / block_traits::qk;
++    constexpr int nblocks                     = nrows_t * blocks_per_row;
++    constexpr int blocks_per_subgroup         = ceil_div(block_traits::vdr_mmvq * WARP_SIZE, block_traits::qi);
++    constexpr int block_elements_per_subgroup = block_traits::qi / block_traits::vdr_mmvq;
++
++    static_assert(ncols_t == 512);
++    static_assert(nrows_t == 2048);
++    static_assert(blocks_per_row == 2);
++    static_assert(blocks_per_subgroup > 0);
++    static_assert(block_elements_per_subgroup > 0);
++
++    const int expert_idx = item_ct1.get_group(1);
++    const int i02        = ids_dev[expert_idx];
++
++    const char * vx  = (const char *) vx_base + (size_t) i02 * expert_weight_stride;
++    const char * vy  = (const char *) vy_base + (size_t) expert_idx * src1_row_stride;
++    float *      dst = (float *) ((char *) dst_base + (size_t) expert_idx * dst_row_stride);
++
++    const int row = item_ct1.get_group(2) * item_ct1.get_local_range(1) + item_ct1.get_local_id(1);
++    if (row >= nrows_t) {
++        return;
++    }
++
++    const auto sg = item_ct1.get_sub_group();
++    float partial_sum = 0.0f;
++#pragma unroll
++    for (int i = sg.get_local_linear_id() / block_elements_per_subgroup; i < blocks_per_row; i += blocks_per_subgroup) {
++        const int ibx = row * blocks_per_row + i;
++
++        const auto bx_offset = block_type::get_block_offset(ibx, nblocks);
++        const auto d_offset  = block_type::get_d_offset(nrows_t, ncols_t, ibx);
++
++        const int           iby            = i * block_type::block_to_q8_1_ratio();
++        const int8_t *      q8_1_quant_ptr = (const int8_t *) vy + iby * QK8_1;
++        const sycl::half2 * q8_1_ds_ptr    = (const sycl::half2 *) ((const char *) vy + ncols_t + iby * sizeof(sycl::half2));
++
++#pragma unroll
++        for (int elem = 0; elem < block_elements_per_subgroup; elem += WARP_SIZE) {
++            const int iqs = elem + block_traits::vdr_mmvq * (sg.get_local_linear_id() % block_elements_per_subgroup);
++            partial_sum += reorder_vec_dot_q_sycl()(vx, bx_offset, d_offset, q8_1_quant_ptr, q8_1_ds_ptr, iqs);
++        }
++    }
++
++    const float sum = sycl::reduce_over_group(sg, partial_sum, std::plus<>());
++    if (sg.leader()) {
++        dst[row] = sum;
++    }
++}
++
++template <typename reorder_vec_dot_q_sycl>
++static void launch_mul_mat_vec_q_moe_reorder_nx2_down_q6(
++    const void * vx_base, const void * vy, const int32_t * ids_dev,
++    float * dst_base, const int n_experts_used,
++    const size_t expert_weight_stride, const size_t dst_row_stride,
++    const size_t src1_row_stride, dpct::queue_ptr stream) {
++    constexpr int ncols = 512;
++    constexpr int nrows = 2048;
++
++    const int            block_num_y = (nrows + GGML_SYCL_MMV_Y - 1) / GGML_SYCL_MMV_Y;
++    const sycl::range<3> block_nums(1, (unsigned) n_experts_used, (unsigned) block_num_y);
++    const sycl::range<3> block_dims(1, GGML_SYCL_MMV_Y, WARP_SIZE);
++    stream->submit([&](sycl::handler & cgh) {
++        cgh.parallel_for(
++            sycl::nd_range<3>(block_nums * block_dims, block_dims),
++            [=](sycl::nd_item<3> item) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
++                mul_mat_vec_q_moe_reorder_nx2_down_q6<reorder_vec_dot_q_sycl, ncols, nrows>(
++                    vx_base, vy, dst_base, ids_dev, expert_weight_stride,
++                    dst_row_stride, src1_row_stride, item);
++            });
++    });
++}
++
+ bool ggml_sycl_mul_mat_vec_q_id_reorder(
+     enum ggml_type     src0_type,
+     const void *       vx_base,
+@@ -2567,21 +2727,1250 @@ bool ggml_sycl_mul_mat_vec_q_id_reorder(
+     size_t             dst_row_stride,
+     size_t             src1_row_stride,
+     dpct::queue_ptr    stream) {
++    const bool use_nx2_specialize =
++        g_ggml_sycl_enable_moe_nx2_specialize && ncols == 2048 && nrows == 512 && n_experts_used == 8;
++
+     switch (src0_type) {
+         case GGML_TYPE_Q4_K:
+-            launch_mul_mat_vec_q_moe_reorder<reorder_vec_dot_q_sycl<GGML_TYPE_Q4_K>>(
+-                vx_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
+-                expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++            if (use_nx2_specialize) {
++                launch_mul_mat_vec_q_moe_reorder_nx2<reorder_vec_dot_q_sycl<GGML_TYPE_Q4_K>>(
++                    vx_base, vy, ids_dev, dst_base, n_experts_used,
++                    expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++            } else {
++                launch_mul_mat_vec_q_moe_reorder<reorder_vec_dot_q_sycl<GGML_TYPE_Q4_K>>(
++                    vx_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
++                    expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++            }
+             return true;
+         case GGML_TYPE_Q5_K:
+-            launch_mul_mat_vec_q_moe_reorder<reorder_vec_dot_q_sycl<GGML_TYPE_Q5_K>>(
+-                vx_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
+-                expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++            if (use_nx2_specialize) {
++                launch_mul_mat_vec_q_moe_reorder_nx2<reorder_vec_dot_q_sycl<GGML_TYPE_Q5_K>>(
++                    vx_base, vy, ids_dev, dst_base, n_experts_used,
++                    expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++            } else {
++                launch_mul_mat_vec_q_moe_reorder<reorder_vec_dot_q_sycl<GGML_TYPE_Q5_K>>(
++                    vx_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
++                    expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++            }
+             return true;
+         case GGML_TYPE_Q6_K:
+-            launch_mul_mat_vec_q_moe_reorder<reorder_vec_dot_q_sycl<GGML_TYPE_Q6_K>>(
+-                vx_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
+-                expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++            if (g_ggml_sycl_enable_moe_q6_down_nx2_specialize &&
++                ncols == 512 && nrows == 2048 && n_experts_used == 8) {
++                launch_mul_mat_vec_q_moe_reorder_nx2_down_q6<reorder_vec_dot_q_sycl<GGML_TYPE_Q6_K>>(
++                    vx_base, vy, ids_dev, dst_base, n_experts_used,
++                    expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++            } else {
++                launch_mul_mat_vec_q_moe_reorder<reorder_vec_dot_q_sycl<GGML_TYPE_Q6_K>>(
++                    vx_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
++                    expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++            }
++            return true;
++        default:
++            return false;
++    }
++}
++
++template <typename reorder_vec_dot_q_sycl, int ncols_t, int nrows_t>
++static void mul_mat_vec_q_moe_down_weighted_sum_reorder_nx2(
++    const void * __restrict__ vx_base, const void * __restrict__ vy_base,
++    const int32_t * __restrict__ ids_dev, const void * __restrict__ weights_base,
++    float * __restrict__ dst_base, const size_t expert_weight_stride,
++    const size_t src1_row_stride, const size_t weights_row_stride,
++    const sycl::nd_item<3> & item_ct1) {
++    using block_type   = ggml_sycl_reordered::block_q_t<reorder_vec_dot_q_sycl::gtype>;
++    using block_traits = typename block_type::traits;
++
++    constexpr int blocks_per_row              = ncols_t / block_traits::qk;
++    constexpr int nblocks                     = nrows_t * blocks_per_row;
++    constexpr int blocks_per_subgroup         = ceil_div(block_traits::vdr_mmvq * WARP_SIZE, block_traits::qi);
++    constexpr int block_elements_per_subgroup = block_traits::qi / block_traits::vdr_mmvq;
++
++    static_assert(ncols_t == 512);
++    static_assert(nrows_t == 2048);
++    static_assert(blocks_per_row == 2);
++    static_assert(blocks_per_subgroup > 0);
++    static_assert(block_elements_per_subgroup > 0);
++
++    const int row = item_ct1.get_group(2) * item_ct1.get_local_range(1) + item_ct1.get_local_id(1);
++    if (row >= nrows_t) {
++        return;
++    }
++
++    const auto sg = item_ct1.get_sub_group();
++
++    float partial_sum = 0.0f;
++#pragma unroll
++    for (int expert_idx = 0; expert_idx < 8; ++expert_idx) {
++        const int i02 = ids_dev[expert_idx];
++        const char * vx = (const char *) vx_base + (size_t) i02 * expert_weight_stride;
++        const char * vy = (const char *) vy_base + (size_t) expert_idx * src1_row_stride;
++        const float weight = *(const float *) ((const char *) weights_base + (size_t) expert_idx * weights_row_stride);
++
++        for (int i = sg.get_local_linear_id() / block_elements_per_subgroup; i < blocks_per_row; i += blocks_per_subgroup) {
++            const int ibx = row * blocks_per_row + i;
++
++            const auto bx_offset = block_type::get_block_offset(ibx, nblocks);
++            const auto d_offset  = block_type::get_d_offset(nrows_t, ncols_t, ibx);
++
++            const int           iby            = i * block_type::block_to_q8_1_ratio();
++            const int8_t *      q8_1_quant_ptr = (const int8_t *) vy + iby * QK8_1;
++            const sycl::half2 * q8_1_ds_ptr    = (const sycl::half2 *) ((const char *) vy + ncols_t + iby * sizeof(sycl::half2));
++
++#pragma unroll
++            for (int elem = 0; elem < block_elements_per_subgroup; elem += WARP_SIZE) {
++                const int iqs = elem + block_traits::vdr_mmvq * (sg.get_local_linear_id() % block_elements_per_subgroup);
++                partial_sum += weight * reorder_vec_dot_q_sycl()(vx, bx_offset, d_offset, q8_1_quant_ptr, q8_1_ds_ptr, iqs);
++            }
++        }
++    }
++
++    const float sum = sycl::reduce_over_group(sg, partial_sum, std::plus<>());
++    if (sg.leader()) {
++        dst_base[row] = sum;
++    }
++}
++
++template <typename reorder_vec_dot_q_sycl>
++static void launch_mul_mat_vec_q_moe_down_weighted_sum_reorder_nx2(
++    const void * vx_base, const void * vy, const int32_t * ids_dev,
++    const void * weights, float * dst, const size_t expert_weight_stride,
++    const size_t src1_row_stride, const size_t weights_row_stride,
++    dpct::queue_ptr stream) {
++    constexpr int ncols = 512;
++    constexpr int nrows = 2048;
++
++    const int            block_num_y = (nrows + GGML_SYCL_MMV_Y - 1) / GGML_SYCL_MMV_Y;
++    const sycl::range<3> block_nums(1, 1, (unsigned) block_num_y);
++    const sycl::range<3> block_dims(1, GGML_SYCL_MMV_Y, WARP_SIZE);
++    stream->submit([&](sycl::handler & cgh) {
++        cgh.parallel_for(
++            sycl::nd_range<3>(block_nums * block_dims, block_dims),
++            [=](sycl::nd_item<3> item) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
++                mul_mat_vec_q_moe_down_weighted_sum_reorder_nx2<reorder_vec_dot_q_sycl, ncols, nrows>(
++                    vx_base, vy, ids_dev, weights, dst, expert_weight_stride,
++                    src1_row_stride, weights_row_stride, item);
++            });
++    });
++}
++
++bool ggml_sycl_mul_mat_vec_q_id_reorder_down_weighted_sum(
++    enum ggml_type     src0_type,
++    const void *       vx_base,
++    const void *       vy,
++    const int32_t *    ids_dev,
++    const void *       weights,
++    float *            dst,
++    size_t             expert_weight_stride,
++    size_t             src1_row_stride,
++    size_t             weights_row_stride,
++    dpct::queue_ptr    stream) {
++    if (src0_type != GGML_TYPE_Q6_K) {
++        return false;
++    }
++
++    launch_mul_mat_vec_q_moe_down_weighted_sum_reorder_nx2<reorder_vec_dot_q_sycl<GGML_TYPE_Q6_K>>(
++        vx_base, vy, ids_dev, weights, dst, expert_weight_stride,
++        src1_row_stride, weights_row_stride, stream);
++    return true;
++}
++
++template <typename reorder_vec_dot_q_sycl, int ncols_t, int nrows_t>
++static void mul_mat_vec_q_moe_down_weighted_sum_atomic_reorder_nx2(
++    const void * __restrict__ vx_base, const void * __restrict__ vy_base,
++    const int32_t * __restrict__ ids_dev, const void * __restrict__ weights_base,
++    float * __restrict__ dst_base, const size_t expert_weight_stride,
++    const size_t src1_row_stride, const size_t weights_row_stride,
++    const sycl::nd_item<3> & item_ct1) {
++    using block_type   = ggml_sycl_reordered::block_q_t<reorder_vec_dot_q_sycl::gtype>;
++    using block_traits = typename block_type::traits;
++
++    constexpr int blocks_per_row              = ncols_t / block_traits::qk;
++    constexpr int nblocks                     = nrows_t * blocks_per_row;
++    constexpr int blocks_per_subgroup         = ceil_div(block_traits::vdr_mmvq * WARP_SIZE, block_traits::qi);
++    constexpr int block_elements_per_subgroup = block_traits::qi / block_traits::vdr_mmvq;
++
++    static_assert(ncols_t == 512);
++    static_assert(nrows_t == 2048);
++    static_assert(blocks_per_row == 2);
++    static_assert(blocks_per_subgroup > 0);
++    static_assert(block_elements_per_subgroup > 0);
++
++    const int expert_idx = item_ct1.get_group(1);
++    const int row = item_ct1.get_group(2) * item_ct1.get_local_range(1) + item_ct1.get_local_id(1);
++    if (row >= nrows_t) {
++        return;
++    }
++
++    const int i02 = ids_dev[expert_idx];
++    const char * vx = (const char *) vx_base + (size_t) i02 * expert_weight_stride;
++    const char * vy = (const char *) vy_base + (size_t) expert_idx * src1_row_stride;
++    const float weight = *(const float *) ((const char *) weights_base + (size_t) expert_idx * weights_row_stride);
++
++    const auto sg = item_ct1.get_sub_group();
++    float partial_sum = 0.0f;
++    for (int i = sg.get_local_linear_id() / block_elements_per_subgroup; i < blocks_per_row; i += blocks_per_subgroup) {
++        const int ibx = row * blocks_per_row + i;
++
++        const auto bx_offset = block_type::get_block_offset(ibx, nblocks);
++        const auto d_offset  = block_type::get_d_offset(nrows_t, ncols_t, ibx);
++
++        const int           iby            = i * block_type::block_to_q8_1_ratio();
++        const int8_t *      q8_1_quant_ptr = (const int8_t *) vy + iby * QK8_1;
++        const sycl::half2 * q8_1_ds_ptr    = (const sycl::half2 *) ((const char *) vy + ncols_t + iby * sizeof(sycl::half2));
++
++#pragma unroll
++        for (int elem = 0; elem < block_elements_per_subgroup; elem += WARP_SIZE) {
++            const int iqs = elem + block_traits::vdr_mmvq * (sg.get_local_linear_id() % block_elements_per_subgroup);
++            partial_sum += reorder_vec_dot_q_sycl()(vx, bx_offset, d_offset, q8_1_quant_ptr, q8_1_ds_ptr, iqs);
++        }
++    }
++
++    const float sum = sycl::reduce_over_group(sg, partial_sum, std::plus<>());
++    if (sg.leader()) {
++        sycl::atomic_ref<float, sycl::memory_order::relaxed, sycl::memory_scope::device,
++            sycl::access::address_space::global_space> dst_ref(dst_base[row]);
++        dst_ref.fetch_add(sum * weight);
++    }
++}
++
++template <typename reorder_vec_dot_q_sycl>
++static void launch_mul_mat_vec_q_moe_down_weighted_sum_atomic_reorder_nx2(
++    const void * vx_base, const void * vy, const int32_t * ids_dev,
++    const void * weights, float * dst, const size_t expert_weight_stride,
++    const size_t src1_row_stride, const size_t weights_row_stride,
++    dpct::queue_ptr stream) {
++    constexpr int ncols = 512;
++    constexpr int nrows = 2048;
++
++    stream->parallel_for(sycl::range<1>(nrows), [=](sycl::id<1> tid) {
++        dst[tid[0]] = 0.0f;
++    });
++
++    const int            block_num_y = (nrows + GGML_SYCL_MMV_Y - 1) / GGML_SYCL_MMV_Y;
++    const sycl::range<3> block_nums(1, 8, (unsigned) block_num_y);
++    const sycl::range<3> block_dims(1, GGML_SYCL_MMV_Y, WARP_SIZE);
++    stream->submit([&](sycl::handler & cgh) {
++        cgh.parallel_for(
++            sycl::nd_range<3>(block_nums * block_dims, block_dims),
++            [=](sycl::nd_item<3> item) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
++                mul_mat_vec_q_moe_down_weighted_sum_atomic_reorder_nx2<reorder_vec_dot_q_sycl, ncols, nrows>(
++                    vx_base, vy, ids_dev, weights, dst, expert_weight_stride,
++                    src1_row_stride, weights_row_stride, item);
++            });
++    });
++}
++
++bool ggml_sycl_mul_mat_vec_q_id_reorder_down_weighted_sum_atomic(
++    enum ggml_type     src0_type,
++    const void *       vx_base,
++    const void *       vy,
++    const int32_t *    ids_dev,
++    const void *       weights,
++    float *            dst,
++    size_t             expert_weight_stride,
++    size_t             src1_row_stride,
++    size_t             weights_row_stride,
++    dpct::queue_ptr    stream) {
++    if (src0_type != GGML_TYPE_Q6_K) {
++        return false;
++    }
++
++    launch_mul_mat_vec_q_moe_down_weighted_sum_atomic_reorder_nx2<reorder_vec_dot_q_sycl<GGML_TYPE_Q6_K>>(
++        vx_base, vy, ids_dev, weights, dst, expert_weight_stride,
++        src1_row_stride, weights_row_stride, stream);
++    return true;
++}
++
++template <typename reorder_vec_dot_q_sycl, int ncols_t, int nrows_t>
++static void mul_mat_vec_q_moe_down_weighted_sum_local_reorder_nx2(
++    const void * __restrict__ vx_base, const void * __restrict__ vy_base,
++    const int32_t * __restrict__ ids_dev, const void * __restrict__ weights_base,
++    float * __restrict__ dst_base, const size_t expert_weight_stride,
++    const size_t src1_row_stride, const size_t weights_row_stride,
++    sycl::local_accessor<float, 1> expert_sums,
++    const sycl::nd_item<3> & item_ct1) {
++    using block_type   = ggml_sycl_reordered::block_q_t<reorder_vec_dot_q_sycl::gtype>;
++    using block_traits = typename block_type::traits;
++
++    constexpr int blocks_per_row              = ncols_t / block_traits::qk;
++    constexpr int nblocks                     = nrows_t * blocks_per_row;
++    constexpr int blocks_per_subgroup         = ceil_div(block_traits::vdr_mmvq * WARP_SIZE, block_traits::qi);
++    constexpr int block_elements_per_subgroup = block_traits::qi / block_traits::vdr_mmvq;
++
++    static_assert(ncols_t == 512);
++    static_assert(nrows_t == 2048);
++    static_assert(blocks_per_row == 2);
++    static_assert(blocks_per_subgroup > 0);
++    static_assert(block_elements_per_subgroup > 0);
++
++    const int row = item_ct1.get_group(2);
++    const int expert_idx = item_ct1.get_local_id(1);
++
++    const int i02 = ids_dev[expert_idx];
++    const char * vx = (const char *) vx_base + (size_t) i02 * expert_weight_stride;
++    const char * vy = (const char *) vy_base + (size_t) expert_idx * src1_row_stride;
++    const float weight = *(const float *) ((const char *) weights_base + (size_t) expert_idx * weights_row_stride);
++
++    const auto sg = item_ct1.get_sub_group();
++    float partial_sum = 0.0f;
++    for (int i = sg.get_local_linear_id() / block_elements_per_subgroup; i < blocks_per_row; i += blocks_per_subgroup) {
++        const int ibx = row * blocks_per_row + i;
++
++        const auto bx_offset = block_type::get_block_offset(ibx, nblocks);
++        const auto d_offset  = block_type::get_d_offset(nrows_t, ncols_t, ibx);
++
++        const int           iby            = i * block_type::block_to_q8_1_ratio();
++        const int8_t *      q8_1_quant_ptr = (const int8_t *) vy + iby * QK8_1;
++        const sycl::half2 * q8_1_ds_ptr    = (const sycl::half2 *) ((const char *) vy + ncols_t + iby * sizeof(sycl::half2));
++
++#pragma unroll
++        for (int elem = 0; elem < block_elements_per_subgroup; elem += WARP_SIZE) {
++            const int iqs = elem + block_traits::vdr_mmvq * (sg.get_local_linear_id() % block_elements_per_subgroup);
++            partial_sum += reorder_vec_dot_q_sycl()(vx, bx_offset, d_offset, q8_1_quant_ptr, q8_1_ds_ptr, iqs);
++        }
++    }
++
++    const float sum = sycl::reduce_over_group(sg, partial_sum, std::plus<>());
++    if (sg.leader()) {
++        expert_sums[expert_idx] = sum * weight;
++    }
++
++    item_ct1.barrier(sycl::access::fence_space::local_space);
++
++    if (expert_idx == 0) {
++        const int lane = sg.get_local_linear_id();
++        const float partial = lane < 8 ? expert_sums[lane] : 0.0f;
++        const float total = sycl::reduce_over_group(sg, partial, std::plus<>());
++        if (sg.leader()) {
++            dst_base[row] = total;
++        }
++    }
++}
++
++template <typename reorder_vec_dot_q_sycl>
++static void launch_mul_mat_vec_q_moe_down_weighted_sum_local_reorder_nx2(
++    const void * vx_base, const void * vy, const int32_t * ids_dev,
++    const void * weights, float * dst, const size_t expert_weight_stride,
++    const size_t src1_row_stride, const size_t weights_row_stride,
++    dpct::queue_ptr stream) {
++    constexpr int ncols = 512;
++    constexpr int nrows = 2048;
++    constexpr int n_experts_used = 8;
++
++    const sycl::range<3> block_nums(1, 1, nrows);
++    const sycl::range<3> block_dims(1, n_experts_used, WARP_SIZE);
++    stream->submit([&](sycl::handler & cgh) {
++        sycl::local_accessor<float, 1> expert_sums(sycl::range<1>(n_experts_used), cgh);
++        cgh.parallel_for(
++            sycl::nd_range<3>(block_nums * block_dims, block_dims),
++            [=](sycl::nd_item<3> item) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
++                mul_mat_vec_q_moe_down_weighted_sum_local_reorder_nx2<reorder_vec_dot_q_sycl, ncols, nrows>(
++                    vx_base, vy, ids_dev, weights, dst, expert_weight_stride,
++                    src1_row_stride, weights_row_stride, expert_sums, item);
++            });
++    });
++}
++
++bool ggml_sycl_mul_mat_vec_q_id_reorder_down_weighted_sum_local(
++    enum ggml_type     src0_type,
++    const void *       vx_base,
++    const void *       vy,
++    const int32_t *    ids_dev,
++    const void *       weights,
++    float *            dst,
++    size_t             expert_weight_stride,
++    size_t             src1_row_stride,
++    size_t             weights_row_stride,
++    dpct::queue_ptr    stream) {
++    if (src0_type != GGML_TYPE_Q6_K) {
++        return false;
++    }
++
++    launch_mul_mat_vec_q_moe_down_weighted_sum_local_reorder_nx2<reorder_vec_dot_q_sycl<GGML_TYPE_Q6_K>>(
++        vx_base, vy, ids_dev, weights, dst, expert_weight_stride,
++        src1_row_stride, weights_row_stride, stream);
++    return true;
++}
++
++template <typename reorder_vec_dot_q_sycl, int ncols_t, int nrows_t>
++static void mul_mat_vec_q_swiglu_reorder_nx2(
++    const void * __restrict__ vup, const void * __restrict__ vgate,
++    const void * __restrict__ vy, float * __restrict__ dst_base,
++    const size_t dst_row_stride,
++    const sycl::nd_item<3> & item_ct1) {
++    using block_type   = ggml_sycl_reordered::block_q_t<reorder_vec_dot_q_sycl::gtype>;
++    using block_traits = typename block_type::traits;
++
++    constexpr int blocks_per_row              = ncols_t / block_traits::qk;
++    constexpr int nblocks                     = nrows_t * blocks_per_row;
++    constexpr int blocks_per_subgroup         = ceil_div(block_traits::vdr_mmvq * WARP_SIZE, block_traits::qi);
++    constexpr int block_elements_per_subgroup = block_traits::qi / block_traits::vdr_mmvq;
++
++    static_assert(ncols_t == 2048);
++    static_assert(nrows_t == 512);
++    static_assert(blocks_per_row == 8);
++    static_assert(blocks_per_subgroup == 1);
++    static_assert(block_elements_per_subgroup == WARP_SIZE);
++
++    const int row = item_ct1.get_group(2) * item_ct1.get_local_range(1) + item_ct1.get_local_id(1);
++    if (row >= nrows_t) {
++        return;
++    }
++
++    const auto sg  = item_ct1.get_sub_group();
++    const int  iqs = block_traits::vdr_mmvq * sg.get_local_linear_id();
++
++    float partial_up   = 0.0f;
++    float partial_gate = 0.0f;
++#pragma unroll
++    for (int i = 0; i < blocks_per_row; ++i) {
++        const int ibx = row * blocks_per_row + i;
++
++        const auto bx_offset = block_type::get_block_offset(ibx, nblocks);
++        const auto d_offset  = block_type::get_d_offset(nrows_t, ncols_t, ibx);
++
++        const int           iby            = i * block_type::block_to_q8_1_ratio();
++        const int8_t *      q8_1_quant_ptr = (const int8_t *) vy + iby * QK8_1;
++        const sycl::half2 * q8_1_ds_ptr    = (const sycl::half2 *) ((const char *) vy + ncols_t + iby * sizeof(sycl::half2));
++
++        partial_up   += reorder_vec_dot_q_sycl()(vup,   bx_offset, d_offset, q8_1_quant_ptr, q8_1_ds_ptr, iqs);
++        partial_gate += reorder_vec_dot_q_sycl()(vgate, bx_offset, d_offset, q8_1_quant_ptr, q8_1_ds_ptr, iqs);
++    }
++
++    for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
++        partial_up   += dpct::permute_sub_group_by_xor(sg, partial_up,   mask);
++        partial_gate += dpct::permute_sub_group_by_xor(sg, partial_gate, mask);
++    }
++    if (item_ct1.get_local_id(2) == 0) {
++        float * dst = (float *) ((char *) dst_base + (size_t) row * dst_row_stride);
++        *dst = partial_up * (partial_gate / (1.0f + sycl::native::exp(-partial_gate)));
++    }
++}
++
++template <typename reorder_vec_dot_q_sycl>
++static void launch_mul_mat_vec_q_swiglu_reorder_nx2(
++    const void * vup, const void * vgate, const void * vy,
++    float * dst, const size_t dst_row_stride, dpct::queue_ptr stream) {
++    constexpr int ncols = 2048;
++    constexpr int nrows = 512;
++
++    const int            block_num_y = (nrows + GGML_SYCL_MMV_Y - 1) / GGML_SYCL_MMV_Y;
++    const sycl::range<3> block_nums(1, 1, (unsigned) block_num_y);
++    const sycl::range<3> block_dims(1, GGML_SYCL_MMV_Y, WARP_SIZE);
++    stream->submit([&](sycl::handler & cgh) {
++        cgh.parallel_for(
++            sycl::nd_range<3>(block_nums * block_dims, block_dims),
++            [=](sycl::nd_item<3> item) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
++                mul_mat_vec_q_swiglu_reorder_nx2<reorder_vec_dot_q_sycl, ncols, nrows>(
++                    vup, vgate, vy, dst, dst_row_stride, item);
++            });
++    });
++}
++
++bool ggml_sycl_mul_mat_vec_q_swiglu_reorder_nx2(
++    enum ggml_type     src0_type,
++    const void *       vup,
++    const void *       vgate,
++    const void *       vy,
++    float *            dst,
++    size_t             dst_row_stride,
++    dpct::queue_ptr    stream) {
++    switch (src0_type) {
++        case GGML_TYPE_Q4_K:
++            launch_mul_mat_vec_q_swiglu_reorder_nx2<reorder_vec_dot_q_sycl<GGML_TYPE_Q4_K>>(
++                vup, vgate, vy, dst, dst_row_stride, stream);
++            return true;
++        case GGML_TYPE_Q5_K:
++            launch_mul_mat_vec_q_swiglu_reorder_nx2<reorder_vec_dot_q_sycl<GGML_TYPE_Q5_K>>(
++                vup, vgate, vy, dst, dst_row_stride, stream);
++            return true;
++        default:
++            return false;
++    }
++}
++
++// Reordered MoE expert gate+up GEMV with direct SwiGLU output. This mirrors
++// mul_mat_vec_q_moe_reorder indexing, but reads two expert tensors while the
++// shared activation row stays quantized once in Q8_1 SoA.
++template <typename reorder_vec_dot_q_sycl>
++static void mul_mat_vec_q_moe_swiglu_reorder(
++    const void * __restrict__ vup_base, const void * __restrict__ vgate_base,
++    const void * __restrict__ vy_base, float * __restrict__ dst_base,
++    const int32_t * __restrict__ ids_dev,
++    const int ncols, const int nrows,
++    const size_t expert_weight_stride, const size_t dst_row_stride,
++    const size_t src1_row_stride,
++    const sycl::nd_item<3> & item_ct1) {
++    using block_type   = ggml_sycl_reordered::block_q_t<reorder_vec_dot_q_sycl::gtype>;
++    using block_traits = typename block_type::traits;
++
++    const int expert_idx = item_ct1.get_group(1);
++    const int i02        = ids_dev[expert_idx];
++
++    const char * vup   = (const char *) vup_base   + (size_t) i02 * expert_weight_stride;
++    const char * vgate = (const char *) vgate_base + (size_t) i02 * expert_weight_stride;
++    const char * vy    = (const char *) vy_base    + (size_t) expert_idx * src1_row_stride;
++    float *      dst   = (float *) ((char *) dst_base + (size_t) expert_idx * dst_row_stride);
++
++    const int row = item_ct1.get_group(2) * item_ct1.get_local_range(1) + item_ct1.get_local_id(1);
++    if (row >= nrows) {
++        return;
++    }
++
++    const auto sg = item_ct1.get_sub_group();
++
++    const int     blocks_per_row              = ncols / block_traits::qk;
++    constexpr int blocks_per_subgroup         = ceil_div(block_traits::vdr_mmvq * WARP_SIZE, block_traits::qi);
++    constexpr int block_elements_per_subgroup = block_traits::qi / block_traits::vdr_mmvq;
++    const int     nblocks                     = nrows * (ncols / block_traits::qk);
++
++    static_assert(blocks_per_subgroup > 0);
++    static_assert(block_elements_per_subgroup > 0);
++
++    float partial_up   = 0.0f;
++    float partial_gate = 0.0f;
++    for (int i = sg.get_local_linear_id() / block_elements_per_subgroup; i < blocks_per_row; i += blocks_per_subgroup) {
++        const int ibx = row * blocks_per_row + i;
++
++        const auto bx_offset = block_type::get_block_offset(ibx, nblocks);
++        const auto d_offset  = block_type::get_d_offset(nrows, ncols, ibx);
++
++        const int           iby            = i * block_type::block_to_q8_1_ratio();
++        const int8_t *      q8_1_quant_ptr = (const int8_t *) vy + iby * QK8_1;
++        const sycl::half2 * q8_1_ds_ptr    = (const sycl::half2 *) ((const char *) vy + ncols + iby * sizeof(sycl::half2));
++
++#pragma unroll
++        for (int elem = 0; elem < block_elements_per_subgroup; elem += WARP_SIZE) {
++            const int iqs = elem + block_traits::vdr_mmvq * (sg.get_local_linear_id() % block_elements_per_subgroup);
++            partial_up   += reorder_vec_dot_q_sycl()(vup,   bx_offset, d_offset, q8_1_quant_ptr, q8_1_ds_ptr, iqs);
++            partial_gate += reorder_vec_dot_q_sycl()(vgate, bx_offset, d_offset, q8_1_quant_ptr, q8_1_ds_ptr, iqs);
++        }
++    }
++
++    const float up   = sycl::reduce_over_group(sg, partial_up,   std::plus<>());
++    const float gate = sycl::reduce_over_group(sg, partial_gate, std::plus<>());
++    if (sg.leader()) {
++        dst[row] = up * (gate / (1.0f + sycl::native::exp(-gate)));
++    }
++}
++
++template <typename reorder_vec_dot_q_sycl>
++static void launch_mul_mat_vec_q_moe_swiglu_reorder(
++    const void * vup_base, const void * vgate_base, const void * vy,
++    const int32_t * ids_dev, float * dst_base, const int ncols,
++    const int nrows, const int n_experts_used,
++    const size_t expert_weight_stride, const size_t dst_row_stride,
++    const size_t src1_row_stride, dpct::queue_ptr stream) {
++    const int            block_num_y = (nrows + GGML_SYCL_MMV_Y - 1) / GGML_SYCL_MMV_Y;
++    const sycl::range<3> block_nums(1, (unsigned) n_experts_used, (unsigned) block_num_y);
++    const sycl::range<3> block_dims(1, GGML_SYCL_MMV_Y, WARP_SIZE);
++    stream->submit([&](sycl::handler & cgh) {
++        cgh.parallel_for(
++            sycl::nd_range<3>(block_nums * block_dims, block_dims),
++            [=](sycl::nd_item<3> item) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
++                mul_mat_vec_q_moe_swiglu_reorder<reorder_vec_dot_q_sycl>(
++                    vup_base, vgate_base, vy, dst_base, ids_dev, ncols, nrows,
++                    expert_weight_stride, dst_row_stride, src1_row_stride, item);
++            });
++    });
++}
++
++template <
++    typename reorder_vec_dot_q_sycl, int ncols_t, int nrows_t,
++    bool use_xor_reduce, bool use_exp2_recip, bool use_exp_recip>
++static void mul_mat_vec_q_moe_swiglu_reorder_nx2(
++    const void * __restrict__ vup_base, const void * __restrict__ vgate_base,
++    const void * __restrict__ vy_base, float * __restrict__ dst_base,
++    const int32_t * __restrict__ ids_dev,
++    const size_t expert_weight_stride, const size_t dst_row_stride,
++    const size_t src1_row_stride,
++    const sycl::nd_item<3> & item_ct1) {
++    using block_type   = ggml_sycl_reordered::block_q_t<reorder_vec_dot_q_sycl::gtype>;
++    using block_traits = typename block_type::traits;
++
++    constexpr int blocks_per_row              = ncols_t / block_traits::qk;
++    constexpr int nblocks                     = nrows_t * blocks_per_row;
++    constexpr int blocks_per_subgroup         = ceil_div(block_traits::vdr_mmvq * WARP_SIZE, block_traits::qi);
++    constexpr int block_elements_per_subgroup = block_traits::qi / block_traits::vdr_mmvq;
++
++    static_assert(ncols_t == 2048);
++    static_assert(nrows_t == 512);
++    static_assert(blocks_per_row == 8);
++    static_assert(blocks_per_subgroup == 1);
++    static_assert(block_elements_per_subgroup == WARP_SIZE);
++
++    const int expert_idx = item_ct1.get_group(1);
++    const int i02        = ids_dev[expert_idx];
++
++    const char * vup   = (const char *) vup_base   + (size_t) i02 * expert_weight_stride;
++    const char * vgate = (const char *) vgate_base + (size_t) i02 * expert_weight_stride;
++    const char * vy    = (const char *) vy_base    + (size_t) expert_idx * src1_row_stride;
++    float *      dst   = (float *) ((char *) dst_base + (size_t) expert_idx * dst_row_stride);
++
++    const int row = item_ct1.get_group(2) * item_ct1.get_local_range(1) + item_ct1.get_local_id(1);
++    if (row >= nrows_t) {
++        return;
++    }
++
++    const auto sg  = item_ct1.get_sub_group();
++    const int  iqs = block_traits::vdr_mmvq * sg.get_local_linear_id();
++
++    float partial_up   = 0.0f;
++    float partial_gate = 0.0f;
++#pragma unroll
++    for (int i = 0; i < blocks_per_row; ++i) {
++        const int ibx = row * blocks_per_row + i;
++
++        const auto bx_offset = block_type::get_block_offset(ibx, nblocks);
++        const auto d_offset  = block_type::get_d_offset(nrows_t, ncols_t, ibx);
++
++        const int           iby            = i * block_type::block_to_q8_1_ratio();
++        const int8_t *      q8_1_quant_ptr = (const int8_t *) vy + iby * QK8_1;
++        const sycl::half2 * q8_1_ds_ptr    = (const sycl::half2 *) ((const char *) vy + ncols_t + iby * sizeof(sycl::half2));
++
++        partial_up   += reorder_vec_dot_q_sycl()(vup,   bx_offset, d_offset, q8_1_quant_ptr, q8_1_ds_ptr, iqs);
++        partial_gate += reorder_vec_dot_q_sycl()(vgate, bx_offset, d_offset, q8_1_quant_ptr, q8_1_ds_ptr, iqs);
++    }
++
++    if constexpr (use_xor_reduce) {
++        for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
++            partial_up   += dpct::permute_sub_group_by_xor(sg, partial_up,   mask);
++            partial_gate += dpct::permute_sub_group_by_xor(sg, partial_gate, mask);
++        }
++        if (item_ct1.get_local_id(2) == 0) {
++            if constexpr (use_exp2_recip) {
++                dst[row] = partial_up * partial_gate *
++                    sycl::native::recip(1.0f + sycl::native::exp2(-1.4426950408889634f * partial_gate));
++            } else if constexpr (use_exp_recip) {
++                dst[row] = partial_up * partial_gate *
++                    sycl::native::recip(1.0f + sycl::native::exp(-partial_gate));
++            } else {
++                dst[row] = partial_up * (partial_gate / (1.0f + sycl::native::exp(-partial_gate)));
++            }
++        }
++    } else {
++        const float up   = sycl::reduce_over_group(sg, partial_up,   std::plus<>());
++        const float gate = sycl::reduce_over_group(sg, partial_gate, std::plus<>());
++        if (sg.leader()) {
++            if constexpr (use_exp2_recip) {
++                dst[row] = up * gate * sycl::native::recip(1.0f + sycl::native::exp2(-1.4426950408889634f * gate));
++            } else if constexpr (use_exp_recip) {
++                dst[row] = up * gate * sycl::native::recip(1.0f + sycl::native::exp(-gate));
++            } else {
++                dst[row] = up * (gate / (1.0f + sycl::native::exp(-gate)));
++            }
++        }
++    }
++}
++
++template <ggml_type gtype, int ncols_t, int nrows_t>
++static void mul_mat_vec_q_moe_swiglu_reorder_nx2_dual_dot(
++    const void * __restrict__ vup_base, const void * __restrict__ vgate_base,
++    const void * __restrict__ vy_base, float * __restrict__ dst_base,
++    const int32_t * __restrict__ ids_dev,
++    const size_t expert_weight_stride, const size_t dst_row_stride,
++    const size_t src1_row_stride,
++    const sycl::nd_item<3> & item_ct1) {
++    using block_type   = ggml_sycl_reordered::block_q_t<gtype>;
++    using block_traits = typename block_type::traits;
++
++    constexpr int blocks_per_row              = ncols_t / block_traits::qk;
++    constexpr int nblocks                     = nrows_t * blocks_per_row;
++    constexpr int blocks_per_subgroup         = ceil_div(block_traits::vdr_mmvq * WARP_SIZE, block_traits::qi);
++    constexpr int block_elements_per_subgroup = block_traits::qi / block_traits::vdr_mmvq;
++
++    static_assert(ncols_t == 2048);
++    static_assert(nrows_t == 512);
++    static_assert(blocks_per_row == 8);
++    static_assert(blocks_per_subgroup == 1);
++    static_assert(block_elements_per_subgroup == WARP_SIZE);
++
++    const int expert_idx = item_ct1.get_group(1);
++    const int i02        = ids_dev[expert_idx];
++
++    const char * vup   = (const char *) vup_base   + (size_t) i02 * expert_weight_stride;
++    const char * vgate = (const char *) vgate_base + (size_t) i02 * expert_weight_stride;
++    const char * vy    = (const char *) vy_base    + (size_t) expert_idx * src1_row_stride;
++    float *      dst   = (float *) ((char *) dst_base + (size_t) expert_idx * dst_row_stride);
++
++    const int row = item_ct1.get_group(2) * item_ct1.get_local_range(1) + item_ct1.get_local_id(1);
++    if (row >= nrows_t) {
++        return;
++    }
++
++    const auto sg  = item_ct1.get_sub_group();
++    const int  iqs = block_traits::vdr_mmvq * sg.get_local_linear_id();
++
++    float partial_up   = 0.0f;
++    float partial_gate = 0.0f;
++#pragma unroll
++    for (int i = 0; i < blocks_per_row; ++i) {
++        const int ibx = row * blocks_per_row + i;
++
++        const auto bx_offset = block_type::get_block_offset(ibx, nblocks);
++        const auto d_offset  = block_type::get_d_offset(nrows_t, ncols_t, ibx);
++
++        const int           iby            = i * block_type::block_to_q8_1_ratio();
++        const int8_t *      q8_1_quant_ptr = (const int8_t *) vy + iby * QK8_1;
++        const sycl::half2 * q8_1_ds_ptr    = (const sycl::half2 *) ((const char *) vy + ncols_t + iby * sizeof(sycl::half2));
++
++        dual_reorder_vec_dot_q_sycl<gtype>()(
++            vup, vgate, bx_offset, d_offset, q8_1_quant_ptr, q8_1_ds_ptr, iqs, partial_up, partial_gate);
++    }
++
++    const float up   = sycl::reduce_over_group(sg, partial_up,   std::plus<>());
++    const float gate = sycl::reduce_over_group(sg, partial_gate, std::plus<>());
++    if (sg.leader()) {
++        dst[row] = up * (gate / (1.0f + sycl::native::exp(-gate)));
++    }
++}
++
++template <
++    typename reorder_vec_dot_q_sycl,
++    bool use_xor_reduce, bool use_exp2_recip, bool use_exp_recip,
++    int rows_per_workgroup>
++static void launch_mul_mat_vec_q_moe_swiglu_reorder_nx2(
++    const void * vup_base, const void * vgate_base, const void * vy,
++    const int32_t * ids_dev, float * dst_base, const int n_experts_used,
++    const size_t expert_weight_stride, const size_t dst_row_stride,
++    const size_t src1_row_stride, dpct::queue_ptr stream) {
++    constexpr int ncols = 2048;
++    constexpr int nrows = 512;
++
++    static_assert(rows_per_workgroup > 0);
++    const int            block_num_y = (nrows + rows_per_workgroup - 1) / rows_per_workgroup;
++    const sycl::range<3> block_nums(1, (unsigned) n_experts_used, (unsigned) block_num_y);
++    const sycl::range<3> block_dims(1, rows_per_workgroup, WARP_SIZE);
++    stream->submit([&](sycl::handler & cgh) {
++        cgh.parallel_for(
++            sycl::nd_range<3>(block_nums * block_dims, block_dims),
++            [=](sycl::nd_item<3> item) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
++                mul_mat_vec_q_moe_swiglu_reorder_nx2<
++                    reorder_vec_dot_q_sycl, ncols, nrows,
++                    use_xor_reduce, use_exp2_recip, use_exp_recip>(
++                    vup_base, vgate_base, vy, dst_base, ids_dev,
++                    expert_weight_stride, dst_row_stride, src1_row_stride, item);
++            });
++    });
++}
++
++template <ggml_type gtype>
++static void launch_mul_mat_vec_q_moe_swiglu_reorder_nx2_dual_dot(
++    const void * vup_base, const void * vgate_base, const void * vy,
++    const int32_t * ids_dev, float * dst_base, const int n_experts_used,
++    const size_t expert_weight_stride, const size_t dst_row_stride,
++    const size_t src1_row_stride, dpct::queue_ptr stream) {
++    constexpr int ncols = 2048;
++    constexpr int nrows = 512;
++
++    const int            block_num_y = nrows;
++    const sycl::range<3> block_nums(1, (unsigned) n_experts_used, (unsigned) block_num_y);
++    const sycl::range<3> block_dims(1, 1, WARP_SIZE);
++    stream->submit([&](sycl::handler & cgh) {
++        cgh.parallel_for(
++            sycl::nd_range<3>(block_nums * block_dims, block_dims),
++            [=](sycl::nd_item<3> item) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
++                mul_mat_vec_q_moe_swiglu_reorder_nx2_dual_dot<gtype, ncols, nrows>(
++                    vup_base, vgate_base, vy, dst_base, ids_dev,
++                    expert_weight_stride, dst_row_stride, src1_row_stride, item);
++            });
++    });
++}
++
++template <typename reorder_vec_dot_q_sycl, int ncols_t, int nrows_t, int rows_per_workgroup>
++static void mul_mat_vec_q_moe_swiglu_reorder_nx2_local_q8(
++    const void * __restrict__ vup_base, const void * __restrict__ vgate_base,
++    const void * __restrict__ vy_base, float * __restrict__ dst_base,
++    const int32_t * __restrict__ ids_dev,
++    const size_t expert_weight_stride, const size_t dst_row_stride,
++    const size_t src1_row_stride,
++    sycl::local_accessor<int8_t, 1> local_qs,
++    sycl::local_accessor<sycl::half2, 1> local_ds,
++    const sycl::nd_item<3> & item_ct1) {
++    using block_type   = ggml_sycl_reordered::block_q_t<reorder_vec_dot_q_sycl::gtype>;
++    using block_traits = typename block_type::traits;
++
++    constexpr int blocks_per_row              = ncols_t / block_traits::qk;
++    constexpr int nblocks                     = nrows_t * blocks_per_row;
++    constexpr int q8_blocks                   = ncols_t / QK8_1;
++    constexpr int blocks_per_subgroup         = ceil_div(block_traits::vdr_mmvq * WARP_SIZE, block_traits::qi);
++    constexpr int block_elements_per_subgroup = block_traits::qi / block_traits::vdr_mmvq;
++
++    static_assert(ncols_t == 2048);
++    static_assert(nrows_t == 512);
++    static_assert(blocks_per_row == 8);
++    static_assert(blocks_per_subgroup == 1);
++    static_assert(block_elements_per_subgroup == WARP_SIZE);
++    static_assert(rows_per_workgroup > 1);
++
++    const int expert_idx = item_ct1.get_group(1);
++    const int i02        = ids_dev[expert_idx];
++
++    const char * vup   = (const char *) vup_base   + (size_t) i02 * expert_weight_stride;
++    const char * vgate = (const char *) vgate_base + (size_t) i02 * expert_weight_stride;
++    const char * vy    = (const char *) vy_base    + (size_t) expert_idx * src1_row_stride;
++    float *      dst   = (float *) ((char *) dst_base + (size_t) expert_idx * dst_row_stride);
++
++    const int local_linear = item_ct1.get_local_id(1) * WARP_SIZE + item_ct1.get_local_id(2);
++    constexpr int local_size = rows_per_workgroup * WARP_SIZE;
++    for (int idx = local_linear; idx < ncols_t; idx += local_size) {
++        local_qs[idx] = ((const int8_t *) vy)[idx];
++    }
++    for (int idx = local_linear; idx < q8_blocks; idx += local_size) {
++        local_ds[idx] = ((const sycl::half2 *) ((const char *) vy + ncols_t))[idx];
++    }
++    item_ct1.barrier(sycl::access::fence_space::local_space);
++
++    const int row = item_ct1.get_group(2) * rows_per_workgroup + item_ct1.get_local_id(1);
++    if (row >= nrows_t) {
++        return;
++    }
++
++    const auto sg  = item_ct1.get_sub_group();
++    const int  iqs = block_traits::vdr_mmvq * sg.get_local_linear_id();
++
++    float partial_up   = 0.0f;
++    float partial_gate = 0.0f;
++#pragma unroll
++    for (int i = 0; i < blocks_per_row; ++i) {
++        const int ibx = row * blocks_per_row + i;
++
++        const auto bx_offset = block_type::get_block_offset(ibx, nblocks);
++        const auto d_offset  = block_type::get_d_offset(nrows_t, ncols_t, ibx);
++
++        const int iby = i * block_type::block_to_q8_1_ratio();
++        const int8_t * q8_1_quant_ptr = &local_qs[iby * QK8_1];
++        const sycl::half2 * q8_1_ds_ptr = &local_ds[iby];
++
++        partial_up   += reorder_vec_dot_q_sycl()(vup,   bx_offset, d_offset, q8_1_quant_ptr, q8_1_ds_ptr, iqs);
++        partial_gate += reorder_vec_dot_q_sycl()(vgate, bx_offset, d_offset, q8_1_quant_ptr, q8_1_ds_ptr, iqs);
++    }
++
++    const float up   = sycl::reduce_over_group(sg, partial_up,   std::plus<>());
++    const float gate = sycl::reduce_over_group(sg, partial_gate, std::plus<>());
++    if (sg.leader()) {
++        dst[row] = up * (gate / (1.0f + sycl::native::exp(-gate)));
++    }
++}
++
++template <typename reorder_vec_dot_q_sycl, int rows_per_workgroup>
++static void launch_mul_mat_vec_q_moe_swiglu_reorder_nx2_local_q8(
++    const void * vup_base, const void * vgate_base, const void * vy,
++    const int32_t * ids_dev, float * dst_base, const int n_experts_used,
++    const size_t expert_weight_stride, const size_t dst_row_stride,
++    const size_t src1_row_stride, dpct::queue_ptr stream) {
++    constexpr int ncols = 2048;
++    constexpr int nrows = 512;
++    constexpr int q8_blocks = ncols / QK8_1;
++
++    const int            block_num_y = (nrows + rows_per_workgroup - 1) / rows_per_workgroup;
++    const sycl::range<3> block_nums(1, (unsigned) n_experts_used, (unsigned) block_num_y);
++    const sycl::range<3> block_dims(1, rows_per_workgroup, WARP_SIZE);
++    stream->submit([&](sycl::handler & cgh) {
++        sycl::local_accessor<int8_t, 1> local_qs(sycl::range<1>(ncols), cgh);
++        sycl::local_accessor<sycl::half2, 1> local_ds(sycl::range<1>(q8_blocks), cgh);
++        cgh.parallel_for(
++            sycl::nd_range<3>(block_nums * block_dims, block_dims),
++            [=](sycl::nd_item<3> item) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
++                mul_mat_vec_q_moe_swiglu_reorder_nx2_local_q8<reorder_vec_dot_q_sycl, ncols, nrows, rows_per_workgroup>(
++                    vup_base, vgate_base, vy, dst_base, ids_dev,
++                    expert_weight_stride, dst_row_stride, src1_row_stride,
++                    local_qs, local_ds, item);
++            });
++    });
++}
++
++template <typename reorder_vec_dot_q_sycl, int ncols_t, int nrows_t, bool use_local_q8>
++static void mul_mat_vec_q_moe_swiglu_reorder_nx2_expert_pack(
++    const void * __restrict__ vup_base, const void * __restrict__ vgate_base,
++    const void * __restrict__ vy_base, float * __restrict__ dst_base,
++    const int32_t * __restrict__ ids_dev,
++    const size_t expert_weight_stride, const size_t dst_row_stride,
++    const size_t src1_row_stride,
++    sycl::local_accessor<int8_t, 1> local_qs,
++    sycl::local_accessor<sycl::half2, 1> local_ds,
++    const sycl::nd_item<3> & item_ct1) {
++    using block_type   = ggml_sycl_reordered::block_q_t<reorder_vec_dot_q_sycl::gtype>;
++    using block_traits = typename block_type::traits;
++
++    constexpr int n_experts_used             = 8;
++    constexpr int blocks_per_row              = ncols_t / block_traits::qk;
++    constexpr int nblocks                     = nrows_t * blocks_per_row;
++    constexpr int q8_blocks                   = ncols_t / QK8_1;
++    constexpr int blocks_per_subgroup         = ceil_div(block_traits::vdr_mmvq * WARP_SIZE, block_traits::qi);
++    constexpr int block_elements_per_subgroup = block_traits::qi / block_traits::vdr_mmvq;
++
++    static_assert(ncols_t == 2048);
++    static_assert(nrows_t == 512);
++    static_assert(blocks_per_row == 8);
++    static_assert(blocks_per_subgroup == 1);
++    static_assert(block_elements_per_subgroup == WARP_SIZE);
++
++    const int row        = item_ct1.get_group(2);
++    const int expert_idx = item_ct1.get_local_id(1);
++    const int i02        = ids_dev[expert_idx];
++
++    const char * vup   = (const char *) vup_base   + (size_t) i02 * expert_weight_stride;
++    const char * vgate = (const char *) vgate_base + (size_t) i02 * expert_weight_stride;
++    const char * vy    = (const char *) vy_base    + (size_t) expert_idx * src1_row_stride;
++    float *      dst   = (float *) ((char *) dst_base + (size_t) expert_idx * dst_row_stride);
++
++    if constexpr (use_local_q8) {
++        const int local_linear = expert_idx * WARP_SIZE + item_ct1.get_local_id(2);
++        constexpr int local_size = n_experts_used * WARP_SIZE;
++        for (int idx = local_linear; idx < ncols_t; idx += local_size) {
++            local_qs[idx] = ((const int8_t *) vy)[idx];
++        }
++        for (int idx = local_linear; idx < q8_blocks; idx += local_size) {
++            local_ds[idx] = ((const sycl::half2 *) ((const char *) vy + ncols_t))[idx];
++        }
++        item_ct1.barrier(sycl::access::fence_space::local_space);
++    }
++
++    const auto sg  = item_ct1.get_sub_group();
++    const int  iqs = block_traits::vdr_mmvq * sg.get_local_linear_id();
++
++    float partial_up   = 0.0f;
++    float partial_gate = 0.0f;
++#pragma unroll
++    for (int i = 0; i < blocks_per_row; ++i) {
++        const int ibx = row * blocks_per_row + i;
++
++        const auto bx_offset = block_type::get_block_offset(ibx, nblocks);
++        const auto d_offset  = block_type::get_d_offset(nrows_t, ncols_t, ibx);
++
++        const int iby = i * block_type::block_to_q8_1_ratio();
++        const int8_t * q8_1_quant_ptr = nullptr;
++        const sycl::half2 * q8_1_ds_ptr = nullptr;
++        if constexpr (use_local_q8) {
++            q8_1_quant_ptr = &local_qs[iby * QK8_1];
++            q8_1_ds_ptr    = &local_ds[iby];
++        } else {
++            q8_1_quant_ptr = (const int8_t *) vy + iby * QK8_1;
++            q8_1_ds_ptr    = (const sycl::half2 *) ((const char *) vy + ncols_t + iby * sizeof(sycl::half2));
++        }
++
++        partial_up   += reorder_vec_dot_q_sycl()(vup,   bx_offset, d_offset, q8_1_quant_ptr, q8_1_ds_ptr, iqs);
++        partial_gate += reorder_vec_dot_q_sycl()(vgate, bx_offset, d_offset, q8_1_quant_ptr, q8_1_ds_ptr, iqs);
++    }
++
++    const float up   = sycl::reduce_over_group(sg, partial_up,   std::plus<>());
++    const float gate = sycl::reduce_over_group(sg, partial_gate, std::plus<>());
++    if (sg.leader()) {
++        dst[row] = up * (gate / (1.0f + sycl::native::exp(-gate)));
++    }
++}
++
++template <typename reorder_vec_dot_q_sycl, bool use_local_q8>
++static void launch_mul_mat_vec_q_moe_swiglu_reorder_nx2_expert_pack(
++    const void * vup_base, const void * vgate_base, const void * vy,
++    const int32_t * ids_dev, float * dst_base, const int n_experts_used,
++    const size_t expert_weight_stride, const size_t dst_row_stride,
++    const size_t src1_row_stride, dpct::queue_ptr stream) {
++    constexpr int ncols = 2048;
++    constexpr int nrows = 512;
++    constexpr int q8_blocks = ncols / QK8_1;
++
++    if (n_experts_used != 8) {
++        return;
++    }
++
++    const sycl::range<3> block_nums(1, 1, nrows);
++    const sycl::range<3> block_dims(1, n_experts_used, WARP_SIZE);
++    stream->submit([&](sycl::handler & cgh) {
++        sycl::local_accessor<int8_t, 1> local_qs(sycl::range<1>(use_local_q8 ? ncols : 1), cgh);
++        sycl::local_accessor<sycl::half2, 1> local_ds(sycl::range<1>(use_local_q8 ? q8_blocks : 1), cgh);
++        cgh.parallel_for(
++            sycl::nd_range<3>(block_nums * block_dims, block_dims),
++            [=](sycl::nd_item<3> item) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
++                mul_mat_vec_q_moe_swiglu_reorder_nx2_expert_pack<reorder_vec_dot_q_sycl, ncols, nrows, use_local_q8>(
++                    vup_base, vgate_base, vy, dst_base, ids_dev,
++                    expert_weight_stride, dst_row_stride, src1_row_stride,
++                    local_qs, local_ds, item);
++            });
++    });
++}
++
++bool ggml_sycl_mul_mat_vec_q_id_swiglu_reorder(
++    enum ggml_type     src0_type,
++    const void *       vup_base,
++    const void *       vgate_base,
++    const void *       vy,
++    const int32_t *    ids_dev,
++    float *            dst_base,
++    int                ncols,
++    int                nrows,
++    int                n_experts_used,
++    size_t             expert_weight_stride,
++    size_t             dst_row_stride,
++    size_t             src1_row_stride,
++    dpct::queue_ptr    stream) {
++    const bool use_nx2_specialize =
++        g_ggml_sycl_enable_moe_nx2_specialize && ncols == 2048 && nrows == 512 && n_experts_used == 8;
++
++    switch (src0_type) {
++        case GGML_TYPE_Q4_K:
++            if (use_nx2_specialize) {
++                if (g_ggml_sycl_enable_moe_nx2_specialize == 2) {
++                    launch_mul_mat_vec_q_moe_swiglu_reorder_nx2<reorder_vec_dot_q_sycl<GGML_TYPE_Q4_K>, true, false, false, 1>(
++                        vup_base, vgate_base, vy, ids_dev, dst_base, n_experts_used,
++                        expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++                } else if (g_ggml_sycl_enable_moe_nx2_specialize == 3) {
++                    launch_mul_mat_vec_q_moe_swiglu_reorder_nx2<reorder_vec_dot_q_sycl<GGML_TYPE_Q4_K>, false, true, false, 1>(
++                        vup_base, vgate_base, vy, ids_dev, dst_base, n_experts_used,
++                        expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++                } else if (g_ggml_sycl_enable_moe_nx2_specialize == 4) {
++                    launch_mul_mat_vec_q_moe_swiglu_reorder_nx2<reorder_vec_dot_q_sycl<GGML_TYPE_Q4_K>, false, false, true, 1>(
++                        vup_base, vgate_base, vy, ids_dev, dst_base, n_experts_used,
++                        expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++                } else if (g_ggml_sycl_enable_moe_nx2_specialize == 5) {
++                    launch_mul_mat_vec_q_moe_swiglu_reorder_nx2<reorder_vec_dot_q_sycl<GGML_TYPE_Q4_K>, false, false, false, 4>(
++                        vup_base, vgate_base, vy, ids_dev, dst_base, n_experts_used,
++                        expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++                } else if (g_ggml_sycl_enable_moe_nx2_specialize == 6) {
++                    launch_mul_mat_vec_q_moe_swiglu_reorder_nx2<reorder_vec_dot_q_sycl<GGML_TYPE_Q4_K>, false, false, false, 2>(
++                        vup_base, vgate_base, vy, ids_dev, dst_base, n_experts_used,
++                        expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++                } else if (g_ggml_sycl_enable_moe_nx2_specialize == 7) {
++                    launch_mul_mat_vec_q_moe_swiglu_reorder_nx2<reorder_vec_dot_q_sycl<GGML_TYPE_Q4_K>, false, false, false, 8>(
++                        vup_base, vgate_base, vy, ids_dev, dst_base, n_experts_used,
++                        expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++                } else if (g_ggml_sycl_enable_moe_nx2_specialize == 8) {
++                    launch_mul_mat_vec_q_moe_swiglu_reorder_nx2_local_q8<reorder_vec_dot_q_sycl<GGML_TYPE_Q4_K>, 4>(
++                        vup_base, vgate_base, vy, ids_dev, dst_base, n_experts_used,
++                        expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++                } else if (g_ggml_sycl_enable_moe_nx2_specialize == 9) {
++                    launch_mul_mat_vec_q_moe_swiglu_reorder_nx2_expert_pack<reorder_vec_dot_q_sycl<GGML_TYPE_Q4_K>, false>(
++                        vup_base, vgate_base, vy, ids_dev, dst_base, n_experts_used,
++                        expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++                } else if (g_ggml_sycl_enable_moe_nx2_specialize == 10) {
++                    launch_mul_mat_vec_q_moe_swiglu_reorder_nx2_expert_pack<reorder_vec_dot_q_sycl<GGML_TYPE_Q4_K>, true>(
++                        vup_base, vgate_base, vy, ids_dev, dst_base, n_experts_used,
++                        expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++                } else if (g_ggml_sycl_enable_moe_nx2_specialize == 11) {
++                    launch_mul_mat_vec_q_moe_swiglu_reorder_nx2_dual_dot<GGML_TYPE_Q4_K>(
++                        vup_base, vgate_base, vy, ids_dev, dst_base, n_experts_used,
++                        expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++                } else {
++                    launch_mul_mat_vec_q_moe_swiglu_reorder_nx2<reorder_vec_dot_q_sycl<GGML_TYPE_Q4_K>, false, false, false, 1>(
++                        vup_base, vgate_base, vy, ids_dev, dst_base, n_experts_used,
++                        expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++                }
++            } else {
++                launch_mul_mat_vec_q_moe_swiglu_reorder<reorder_vec_dot_q_sycl<GGML_TYPE_Q4_K>>(
++                    vup_base, vgate_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
++                    expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++            }
++            return true;
++        case GGML_TYPE_Q5_K:
++            if (use_nx2_specialize) {
++                if (g_ggml_sycl_enable_moe_nx2_specialize == 2) {
++                    launch_mul_mat_vec_q_moe_swiglu_reorder_nx2<reorder_vec_dot_q_sycl<GGML_TYPE_Q5_K>, true, false, false, 1>(
++                        vup_base, vgate_base, vy, ids_dev, dst_base, n_experts_used,
++                        expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++                } else if (g_ggml_sycl_enable_moe_nx2_specialize == 3) {
++                    launch_mul_mat_vec_q_moe_swiglu_reorder_nx2<reorder_vec_dot_q_sycl<GGML_TYPE_Q5_K>, false, true, false, 1>(
++                        vup_base, vgate_base, vy, ids_dev, dst_base, n_experts_used,
++                        expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++                } else if (g_ggml_sycl_enable_moe_nx2_specialize == 4) {
++                    launch_mul_mat_vec_q_moe_swiglu_reorder_nx2<reorder_vec_dot_q_sycl<GGML_TYPE_Q5_K>, false, false, true, 1>(
++                        vup_base, vgate_base, vy, ids_dev, dst_base, n_experts_used,
++                        expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++                } else if (g_ggml_sycl_enable_moe_nx2_specialize == 5) {
++                    launch_mul_mat_vec_q_moe_swiglu_reorder_nx2<reorder_vec_dot_q_sycl<GGML_TYPE_Q5_K>, false, false, false, 4>(
++                        vup_base, vgate_base, vy, ids_dev, dst_base, n_experts_used,
++                        expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++                } else if (g_ggml_sycl_enable_moe_nx2_specialize == 6) {
++                    launch_mul_mat_vec_q_moe_swiglu_reorder_nx2<reorder_vec_dot_q_sycl<GGML_TYPE_Q5_K>, false, false, false, 2>(
++                        vup_base, vgate_base, vy, ids_dev, dst_base, n_experts_used,
++                        expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++                } else if (g_ggml_sycl_enable_moe_nx2_specialize == 7) {
++                    launch_mul_mat_vec_q_moe_swiglu_reorder_nx2<reorder_vec_dot_q_sycl<GGML_TYPE_Q5_K>, false, false, false, 8>(
++                        vup_base, vgate_base, vy, ids_dev, dst_base, n_experts_used,
++                        expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++                } else if (g_ggml_sycl_enable_moe_nx2_specialize == 8) {
++                    launch_mul_mat_vec_q_moe_swiglu_reorder_nx2_local_q8<reorder_vec_dot_q_sycl<GGML_TYPE_Q5_K>, 4>(
++                        vup_base, vgate_base, vy, ids_dev, dst_base, n_experts_used,
++                        expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++                } else if (g_ggml_sycl_enable_moe_nx2_specialize == 9) {
++                    launch_mul_mat_vec_q_moe_swiglu_reorder_nx2_expert_pack<reorder_vec_dot_q_sycl<GGML_TYPE_Q5_K>, false>(
++                        vup_base, vgate_base, vy, ids_dev, dst_base, n_experts_used,
++                        expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++                } else if (g_ggml_sycl_enable_moe_nx2_specialize == 10) {
++                    launch_mul_mat_vec_q_moe_swiglu_reorder_nx2_expert_pack<reorder_vec_dot_q_sycl<GGML_TYPE_Q5_K>, true>(
++                        vup_base, vgate_base, vy, ids_dev, dst_base, n_experts_used,
++                        expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++                } else if (g_ggml_sycl_enable_moe_nx2_specialize == 11) {
++                    launch_mul_mat_vec_q_moe_swiglu_reorder_nx2_dual_dot<GGML_TYPE_Q5_K>(
++                        vup_base, vgate_base, vy, ids_dev, dst_base, n_experts_used,
++                        expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++                } else {
++                    launch_mul_mat_vec_q_moe_swiglu_reorder_nx2<reorder_vec_dot_q_sycl<GGML_TYPE_Q5_K>, false, false, false, 1>(
++                        vup_base, vgate_base, vy, ids_dev, dst_base, n_experts_used,
++                        expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++                }
++            } else {
++                launch_mul_mat_vec_q_moe_swiglu_reorder<reorder_vec_dot_q_sycl<GGML_TYPE_Q5_K>>(
++                    vup_base, vgate_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
++                    expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++            }
++            return true;
++        case GGML_TYPE_Q6_K:
++            launch_mul_mat_vec_q_moe_swiglu_reorder<reorder_vec_dot_q_sycl<GGML_TYPE_Q6_K>>(
++                vup_base, vgate_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
++                expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++            return true;
++        default:
++            return false;
++    }
++}
++
++template <typename reorder_vec_dot_q_sycl, int ncols_t, int nrows_t>
++static void mul_mat_vec_q_moe_swiglu_reorder_nx2_q8_handoff(
++    const void * __restrict__ vup_base, const void * __restrict__ vgate_base,
++    const void * __restrict__ vy_base, float * __restrict__ dst_base,
++    void * __restrict__ q8_dst_base, const int32_t * __restrict__ ids_dev,
++    const size_t expert_weight_stride, const size_t dst_row_stride,
++    const size_t src1_row_stride, const size_t q8_row_stride,
++    sycl::local_accessor<float, 1> swiglu_vals,
++    const sycl::nd_item<3> & item_ct1) {
++    using block_type   = ggml_sycl_reordered::block_q_t<reorder_vec_dot_q_sycl::gtype>;
++    using block_traits = typename block_type::traits;
++
++    constexpr int rows_per_q8_block           = QK8_1;
++    constexpr int blocks_per_row              = ncols_t / block_traits::qk;
++    constexpr int nblocks                     = nrows_t * blocks_per_row;
++    constexpr int blocks_per_subgroup         = ceil_div(block_traits::vdr_mmvq * WARP_SIZE, block_traits::qi);
++    constexpr int block_elements_per_subgroup = block_traits::qi / block_traits::vdr_mmvq;
++
++    static_assert(ncols_t == 2048);
++    static_assert(nrows_t == 512);
++    static_assert(blocks_per_row == 8);
++    static_assert(blocks_per_subgroup == 1);
++    static_assert(block_elements_per_subgroup == WARP_SIZE);
++    static_assert(rows_per_q8_block == 32);
++
++    const int expert_idx = item_ct1.get_group(1);
++    const int i02        = ids_dev[expert_idx];
++    const int local_row  = item_ct1.get_local_id(1);
++    const int row        = item_ct1.get_group(2) * rows_per_q8_block + local_row;
++
++    const char * vup   = (const char *) vup_base   + (size_t) i02 * expert_weight_stride;
++    const char * vgate = (const char *) vgate_base + (size_t) i02 * expert_weight_stride;
++    const char * vy    = (const char *) vy_base    + (size_t) expert_idx * src1_row_stride;
++    float *      dst   = (float *) ((char *) dst_base + (size_t) expert_idx * dst_row_stride);
++
++    const auto sg  = item_ct1.get_sub_group();
++    const int  iqs = block_traits::vdr_mmvq * sg.get_local_linear_id();
++
++    float partial_up   = 0.0f;
++    float partial_gate = 0.0f;
++#pragma unroll
++    for (int i = 0; i < blocks_per_row; ++i) {
++        const int ibx = row * blocks_per_row + i;
++
++        const auto bx_offset = block_type::get_block_offset(ibx, nblocks);
++        const auto d_offset  = block_type::get_d_offset(nrows_t, ncols_t, ibx);
++
++        const int           iby            = i * block_type::block_to_q8_1_ratio();
++        const int8_t *      q8_1_quant_ptr = (const int8_t *) vy + iby * QK8_1;
++        const sycl::half2 * q8_1_ds_ptr    = (const sycl::half2 *) ((const char *) vy + ncols_t + iby * sizeof(sycl::half2));
++
++        partial_up   += reorder_vec_dot_q_sycl()(vup,   bx_offset, d_offset, q8_1_quant_ptr, q8_1_ds_ptr, iqs);
++        partial_gate += reorder_vec_dot_q_sycl()(vgate, bx_offset, d_offset, q8_1_quant_ptr, q8_1_ds_ptr, iqs);
++    }
++
++    const float up   = sycl::reduce_over_group(sg, partial_up,   std::plus<>());
++    const float gate = sycl::reduce_over_group(sg, partial_gate, std::plus<>());
++    if (sg.leader()) {
++        const float val = up * (gate / (1.0f + sycl::native::exp(-gate)));
++        dst[row] = val;
++        swiglu_vals[local_row] = val;
++    }
++
++    item_ct1.barrier(sycl::access::fence_space::local_space);
++
++    if (local_row == 0) {
++        const int lane = sg.get_local_linear_id();
++        const float v0 = swiglu_vals[lane];
++        const float v1 = swiglu_vals[lane + WARP_SIZE];
++
++        float sum  = v0 + v1;
++        float amax = sycl::fmax(sycl::fabs(v0), sycl::fabs(v1));
++        sum  = sycl::reduce_over_group(sg, sum, sycl::plus<float>());
++        amax = sycl::reduce_over_group(sg, amax, sycl::maximum<float>());
++
++        const float d_compute = amax == 0.0f ? 1.0f : amax / 127.0f;
++        const int8_t q0 = sycl::round(v0 / d_compute);
++        const int8_t q1 = sycl::round(v1 / d_compute);
++
++        char * q8_row = (char *) q8_dst_base + (size_t) expert_idx * q8_row_stride;
++        const int q8_col = row / QK8_1;
++        int8_t * qs = (int8_t *) q8_row + q8_col * QK8_1;
++        qs[lane] = q0;
++        qs[lane + WARP_SIZE] = q1;
++
++        if (sg.leader()) {
++            sycl::half2 * ds = (sycl::half2 *) (q8_row + nrows_t + q8_col * sizeof(sycl::half2));
++            const float d_store = amax == 0.0f ? 0.0f : d_compute;
++            *ds = sycl::half2(sycl::half(d_store), sycl::half(sum));
++        }
++    }
++}
++
++template <typename reorder_vec_dot_q_sycl>
++static void launch_mul_mat_vec_q_moe_swiglu_reorder_nx2_q8_handoff(
++    const void * vup_base, const void * vgate_base, const void * vy,
++    const int32_t * ids_dev, float * dst_base, void * q8_dst_base,
++    const int n_experts_used, const size_t expert_weight_stride,
++    const size_t dst_row_stride, const size_t src1_row_stride,
++    const size_t q8_row_stride, dpct::queue_ptr stream) {
++    constexpr int ncols = 2048;
++    constexpr int nrows = 512;
++    constexpr int rows_per_q8_block = QK8_1;
++
++    const int            block_num_y = nrows / rows_per_q8_block;
++    const sycl::range<3> block_nums(1, (unsigned) n_experts_used, (unsigned) block_num_y);
++    const sycl::range<3> block_dims(1, rows_per_q8_block, WARP_SIZE);
++    stream->submit([&](sycl::handler & cgh) {
++        sycl::local_accessor<float, 1> swiglu_vals(sycl::range<1>(rows_per_q8_block), cgh);
++        cgh.parallel_for(
++            sycl::nd_range<3>(block_nums * block_dims, block_dims),
++            [=](sycl::nd_item<3> item) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
++                mul_mat_vec_q_moe_swiglu_reorder_nx2_q8_handoff<reorder_vec_dot_q_sycl, ncols, nrows>(
++                    vup_base, vgate_base, vy, dst_base, q8_dst_base, ids_dev,
++                    expert_weight_stride, dst_row_stride, src1_row_stride,
++                    q8_row_stride, swiglu_vals, item);
++            });
++    });
++}
++
++bool ggml_sycl_mul_mat_vec_q_id_swiglu_reorder_nx2_q8_handoff(
++    enum ggml_type     src0_type,
++    const void *       vup_base,
++    const void *       vgate_base,
++    const void *       vy,
++    const int32_t *    ids_dev,
++    float *            dst_base,
++    void *             q8_dst_base,
++    int                n_experts_used,
++    size_t             expert_weight_stride,
++    size_t             dst_row_stride,
++    size_t             src1_row_stride,
++    size_t             q8_row_stride,
++    dpct::queue_ptr    stream) {
++    switch (src0_type) {
++        case GGML_TYPE_Q4_K:
++            launch_mul_mat_vec_q_moe_swiglu_reorder_nx2_q8_handoff<reorder_vec_dot_q_sycl<GGML_TYPE_Q4_K>>(
++                vup_base, vgate_base, vy, ids_dev, dst_base, q8_dst_base,
++                n_experts_used, expert_weight_stride, dst_row_stride,
++                src1_row_stride, q8_row_stride, stream);
++            return true;
++        case GGML_TYPE_Q5_K:
++            launch_mul_mat_vec_q_moe_swiglu_reorder_nx2_q8_handoff<reorder_vec_dot_q_sycl<GGML_TYPE_Q5_K>>(
++                vup_base, vgate_base, vy, ids_dev, dst_base, q8_dst_base,
++                n_experts_used, expert_weight_stride, dst_row_stride,
++                src1_row_stride, q8_row_stride, stream);
+             return true;
+         default:
+             return false;
+diff --git a/ggml/src/ggml-sycl/mmvq.hpp b/ggml/src/ggml-sycl/mmvq.hpp
+index c5d70bd0e..60caea1fd 100644
+--- a/ggml/src/ggml-sycl/mmvq.hpp
++++ b/ggml/src/ggml-sycl/mmvq.hpp
+@@ -57,4 +57,92 @@ bool ggml_sycl_mul_mat_vec_q_id_reorder(
+     size_t             src1_row_stride,
+     dpct::queue_ptr    stream);
+
++// Reordered Q6_K NX2 down-projection variant that applies top-k weights and
++// writes the reduced [2048] MoE output directly.
++bool ggml_sycl_mul_mat_vec_q_id_reorder_down_weighted_sum(
++    enum ggml_type     src0_type,
++    const void *       vx_base,
++    const void *       vy,
++    const int32_t *    ids_dev,
++    const void *       weights,
++    float *            dst,
++    size_t             expert_weight_stride,
++    size_t             src1_row_stride,
++    size_t             weights_row_stride,
++    dpct::queue_ptr    stream);
++
++// Reordered Q6_K NX2 down-projection variant that preserves per-expert
++// parallelism and atomically accumulates weighted expert contributions.
++bool ggml_sycl_mul_mat_vec_q_id_reorder_down_weighted_sum_atomic(
++    enum ggml_type     src0_type,
++    const void *       vx_base,
++    const void *       vy,
++    const int32_t *    ids_dev,
++    const void *       weights,
++    float *            dst,
++    size_t             expert_weight_stride,
++    size_t             src1_row_stride,
++    size_t             weights_row_stride,
++    dpct::queue_ptr    stream);
++
++// Reordered Q6_K NX2 down-projection variant that computes all eight expert
++// contributions for one output row inside a single workgroup and reduces them
++// through local memory.
++bool ggml_sycl_mul_mat_vec_q_id_reorder_down_weighted_sum_local(
++    enum ggml_type     src0_type,
++    const void *       vx_base,
++    const void *       vy,
++    const int32_t *    ids_dev,
++    const void *       weights,
++    float *            dst,
++    size_t             expert_weight_stride,
++    size_t             src1_row_stride,
++    size_t             weights_row_stride,
++    dpct::queue_ptr    stream);
++
++// Reordered MoE gate+up fused SwiGLU variant. Computes both expert GEMVs from one
++// quantized activation row and writes silu(gate) * up directly to dst_base.
++bool ggml_sycl_mul_mat_vec_q_id_swiglu_reorder(
++    enum ggml_type     src0_type,
++    const void *       vup_base,
++    const void *       vgate_base,
++    const void *       vy,
++    const int32_t *    ids_dev,
++    float *            dst_base,
++    int                ncols,
++    int                nrows,
++    int                n_experts_used,
++    size_t             expert_weight_stride,
++    size_t             dst_row_stride,
++    size_t             src1_row_stride,
++    dpct::queue_ptr    stream);
++
++// Exact NX2 Q4_K/Q5_K gate+up fused SwiGLU variant that also writes the
++// resulting [512,8] activation as reordered Q8_1 rows for the following Q6_K down projection.
++bool ggml_sycl_mul_mat_vec_q_id_swiglu_reorder_nx2_q8_handoff(
++    enum ggml_type     src0_type,
++    const void *       vup_base,
++    const void *       vgate_base,
++    const void *       vy,
++    const int32_t *    ids_dev,
++    float *            dst_base,
++    void *             q8_dst_base,
++    int                n_experts_used,
++    size_t             expert_weight_stride,
++    size_t             dst_row_stride,
++    size_t             src1_row_stride,
++    size_t             q8_row_stride,
++    dpct::queue_ptr    stream);
++
++// Reordered dense gate+up SwiGLU variant for NX2 shared experts. Computes both
++// GEMVs from one quantized activation row and writes silu(gate) * up directly.
++bool ggml_sycl_mul_mat_vec_q_swiglu_reorder_nx2(
++    enum ggml_type     src0_type,
++    const void *       vup,
++    const void *       vgate,
++    const void *       vy,
++    float *            dst,
++    size_t             dst_row_stride,
++    dpct::queue_ptr    stream);
++
+ #endif // GGML_SYCL_MMVQ_HPP
+diff --git a/ggml/src/ggml-sycl/vecdotq.hpp b/ggml/src/ggml-sycl/vecdotq.hpp
+index 4b58b09ab..3ce071345 100644
+--- a/ggml/src/ggml-sycl/vecdotq.hpp
++++ b/ggml/src/ggml-sycl/vecdotq.hpp
+@@ -316,6 +316,10 @@ template <ggml_type T> struct reorder_vec_dot_q_sycl {
+     static_assert(T != T, "ggml_type for reorder vecdot not implemented");
+ };
+
++template <ggml_type T> struct dual_reorder_vec_dot_q_sycl {
++    static_assert(T != T, "ggml_type for dual reorder vecdot not implemented");
++};
++
+ template <> struct reorder_vec_dot_q_sycl<GGML_TYPE_Q4_0> {
+     static constexpr ggml_type gtype = GGML_TYPE_Q4_0;
+
+@@ -519,6 +523,88 @@ template <> struct reorder_vec_dot_q_sycl<GGML_TYPE_Q4_K> {
+     }
+ };
+
++template <> struct dual_reorder_vec_dot_q_sycl<GGML_TYPE_Q4_K> {
++    static constexpr ggml_type gtype = GGML_TYPE_Q4_K;
++
++    __dpct_inline__ void operator()(const void * __restrict__ vup, const void * __restrict__ vgate,
++                                    const std::pair<int, int> ibx_offset, const std::pair<int, int> d_offset,
++                                    const int8_t * q8_1_quant_ptr, const sycl::half2 * q8_1_ds,
++                                    const int & iqs, float & partial_up, float & partial_gate) {
++        const uint8_t * base_up     = static_cast<const uint8_t *>(vup);
++        const uint8_t * base_gate   = static_cast<const uint8_t *>(vgate);
++        const uint8_t * qs_up       = base_up + ibx_offset.first;
++        const uint8_t * qs_gate     = base_gate + ibx_offset.first;
++        const uint8_t * scs_up      = base_up + d_offset.first;
++        const uint8_t * scs_gate    = base_gate + d_offset.first;
++        const ggml_half2 * dms_up   = reinterpret_cast<const ggml_half2 *>(base_up + d_offset.second);
++        const ggml_half2 * dms_gate = reinterpret_cast<const ggml_half2 *>(base_gate + d_offset.second);
++
++        const int bq8_offset = QR4_K * ((iqs / 2) / (QI8_1 / 2));
++        const int * q4_up    = (const int *) (qs_up   + 16 * bq8_offset + 4 * ((iqs / 2) % 4));
++        const int * q4_gate  = (const int *) (qs_gate + 16 * bq8_offset + 4 * ((iqs / 2) % 4));
++        const uint16_t * scales_up   = (const uint16_t *) scs_up;
++        const uint16_t * scales_gate = (const uint16_t *) scs_gate;
++
++        const int v_up0   = q4_up[0];
++        const int v_up1   = q4_up[4];
++        const int v_gate0 = q4_gate[0];
++        const int v_gate1 = q4_gate[4];
++
++        uint16_t aux_up[2];
++        uint16_t aux_gate[2];
++        const int j = (QR4_K * ((iqs / 2) / (QI8_1 / 2))) / 2;
++        if (j < 2) {
++            aux_up[0]   = scales_up[j + 0] & 0x3f3f;
++            aux_up[1]   = scales_up[j + 2] & 0x3f3f;
++            aux_gate[0] = scales_gate[j + 0] & 0x3f3f;
++            aux_gate[1] = scales_gate[j + 2] & 0x3f3f;
++        } else {
++            aux_up[0]   = ((scales_up[j + 2] >> 0) & 0x0f0f) | ((scales_up[j - 2] & 0xc0c0) >> 2);
++            aux_up[1]   = ((scales_up[j + 2] >> 4) & 0x0f0f) | ((scales_up[j - 0] & 0xc0c0) >> 2);
++            aux_gate[0] = ((scales_gate[j + 2] >> 0) & 0x0f0f) | ((scales_gate[j - 2] & 0xc0c0) >> 2);
++            aux_gate[1] = ((scales_gate[j + 2] >> 4) & 0x0f0f) | ((scales_gate[j - 0] & 0xc0c0) >> 2);
++        }
++
++        const uint8_t * sc_up   = (const uint8_t *) aux_up;
++        const uint8_t * m_up    = sc_up + 2;
++        const uint8_t * sc_gate = (const uint8_t *) aux_gate;
++        const uint8_t * m_gate  = sc_gate + 2;
++
++        float sumf_d_up   = 0.0f;
++        float sumf_m_up   = 0.0f;
++        float sumf_d_gate = 0.0f;
++        float sumf_m_gate = 0.0f;
++
++#pragma unroll
++        for (int i = 0; i < QR4_K; ++i) {
++            const int8_t * quant_base_ptr = q8_1_quant_ptr + (bq8_offset + i) * QK8_1;
++            const sycl::half2 ds_values = *(q8_1_ds + bq8_offset + i);
++            const float d8 = ds_values[0];
++            const int * q8 = (const int *) quant_base_ptr + ((iqs / 2) % 4);
++            const int u0 = q8[0];
++            const int u1 = q8[4];
++            const int dot2 = dpct::dp4a(0x01010101, u1, dpct::dp4a(0x01010101, u0, 0));
++
++            const int v0_up = (v_up0 >> (4 * i)) & 0x0F0F0F0F;
++            const int v1_up = (v_up1 >> (4 * i)) & 0x0F0F0F0F;
++            const int dot1_up = dpct::dp4a(v1_up, u1, dpct::dp4a(v0_up, u0, 0));
++            sumf_d_up += d8 * (dot1_up * sc_up[i]);
++            sumf_m_up += d8 * (dot2 * m_up[i]);
++
++            const int v0_gate = (v_gate0 >> (4 * i)) & 0x0F0F0F0F;
++            const int v1_gate = (v_gate1 >> (4 * i)) & 0x0F0F0F0F;
++            const int dot1_gate = dpct::dp4a(v1_gate, u1, dpct::dp4a(v0_gate, u0, 0));
++            sumf_d_gate += d8 * (dot1_gate * sc_gate[i]);
++            sumf_m_gate += d8 * (dot2 * m_gate[i]);
++        }
++
++        const sycl::float2 dm_up_f = dms_up->convert<float, sycl::rounding_mode::automatic>();
++        const sycl::float2 dm_gate_f = dms_gate->convert<float, sycl::rounding_mode::automatic>();
++        partial_up   += dm_up_f.x()   * sumf_d_up   - dm_up_f.y()   * sumf_m_up;
++        partial_gate += dm_gate_f.x() * sumf_d_gate - dm_gate_f.y() * sumf_m_gate;
++    }
++};
++
+ template <> struct reorder_vec_dot_q_sycl<GGML_TYPE_Q5_K> {
+     static constexpr ggml_type gtype = GGML_TYPE_Q5_K;
+
+@@ -578,6 +664,104 @@ template <> struct reorder_vec_dot_q_sycl<GGML_TYPE_Q5_K> {
+     }
+ };
+
++template <> struct dual_reorder_vec_dot_q_sycl<GGML_TYPE_Q5_K> {
++    static constexpr ggml_type gtype = GGML_TYPE_Q5_K;
++
++    __dpct_inline__ void operator()(const void * __restrict__ vup, const void * __restrict__ vgate,
++                                    const std::pair<int, int> ibx_offset, const std::pair<int, int> d_offset,
++                                    const int8_t * q8_1_quant_ptr, const sycl::half2 * q8_1_ds,
++                                    const int & iqs, float & partial_up, float & partial_gate) {
++        const uint8_t * base_up     = static_cast<const uint8_t *>(vup);
++        const uint8_t * base_gate   = static_cast<const uint8_t *>(vgate);
++        const uint8_t * qs_up       = base_up + ibx_offset.first;
++        const uint8_t * qs_gate     = base_gate + ibx_offset.first;
++        const uint8_t * qh_up       = base_up + ibx_offset.second;
++        const uint8_t * qh_gate     = base_gate + ibx_offset.second;
++        const uint8_t * scs_up      = base_up + d_offset.first;
++        const uint8_t * scs_gate    = base_gate + d_offset.first;
++        const ggml_half2 * dms_up   = reinterpret_cast<const ggml_half2 *>(base_up + d_offset.second);
++        const ggml_half2 * dms_gate = reinterpret_cast<const ggml_half2 *>(base_gate + d_offset.second);
++
++        const int bq8_offset = QR5_K * ((iqs / 2) / (QI8_1 / 2));
++        const int * ql_up    = (const int *) (qs_up   + 16 * bq8_offset + 4 * ((iqs / 2) % 4));
++        const int * ql_gate  = (const int *) (qs_gate + 16 * bq8_offset + 4 * ((iqs / 2) % 4));
++        const int * qh_up_ptr   = (const int *) (qh_up   + 4 * ((iqs / 2) % 4));
++        const int * qh_gate_ptr = (const int *) (qh_gate + 4 * ((iqs / 2) % 4));
++        const uint16_t * scales_up   = (const uint16_t *) scs_up;
++        const uint16_t * scales_gate = (const uint16_t *) scs_gate;
++
++        const int vl_up0   = ql_up[0];
++        const int vl_up1   = ql_up[4];
++        const int vl_gate0 = ql_gate[0];
++        const int vl_gate1 = ql_gate[4];
++        const int vh_up0   = qh_up_ptr[0] >> bq8_offset;
++        const int vh_up1   = qh_up_ptr[4] >> bq8_offset;
++        const int vh_gate0 = qh_gate_ptr[0] >> bq8_offset;
++        const int vh_gate1 = qh_gate_ptr[4] >> bq8_offset;
++
++        uint16_t aux_up[2];
++        uint16_t aux_gate[2];
++        const int j = (QR5_K * ((iqs / 2) / (QI8_1 / 2))) / 2;
++        if (j < 2) {
++            aux_up[0]   = scales_up[j + 0] & 0x3f3f;
++            aux_up[1]   = scales_up[j + 2] & 0x3f3f;
++            aux_gate[0] = scales_gate[j + 0] & 0x3f3f;
++            aux_gate[1] = scales_gate[j + 2] & 0x3f3f;
++        } else {
++            aux_up[0]   = ((scales_up[j + 2] >> 0) & 0x0f0f) | ((scales_up[j - 2] & 0xc0c0) >> 2);
++            aux_up[1]   = ((scales_up[j + 2] >> 4) & 0x0f0f) | ((scales_up[j - 0] & 0xc0c0) >> 2);
++            aux_gate[0] = ((scales_gate[j + 2] >> 0) & 0x0f0f) | ((scales_gate[j - 2] & 0xc0c0) >> 2);
++            aux_gate[1] = ((scales_gate[j + 2] >> 4) & 0x0f0f) | ((scales_gate[j - 0] & 0xc0c0) >> 2);
++        }
++
++        const uint8_t * sc_up   = (const uint8_t *) aux_up;
++        const uint8_t * m_up    = sc_up + 2;
++        const uint8_t * sc_gate = (const uint8_t *) aux_gate;
++        const uint8_t * m_gate  = sc_gate + 2;
++
++        float sumf_d_up   = 0.0f;
++        float sumf_m_up   = 0.0f;
++        float sumf_d_gate = 0.0f;
++        float sumf_m_gate = 0.0f;
++
++#pragma unroll
++        for (int i = 0; i < QR5_K; ++i) {
++            const int8_t * quant_base_ptr = q8_1_quant_ptr + (bq8_offset + i) * QK8_1;
++            const sycl::half2 ds_values = *(q8_1_ds + bq8_offset + i);
++            const float d8 = ds_values[0];
++            const int * q8 = (const int *) quant_base_ptr + ((iqs / 2) % 4);
++            const int u0 = q8[0];
++            const int u1 = q8[4];
++            const int dot2 = dpct::dp4a(0x01010101, u0, dpct::dp4a(0x01010101, u1, 0));
++
++            const int vl0_up = (vl_up0 >> (4 * i)) & 0x0F0F0F0F;
++            const int vl1_up = (vl_up1 >> (4 * i)) & 0x0F0F0F0F;
++            const int vh0_up = ((vh_up0 >> i) << 4) & 0x10101010;
++            const int vh1_up = ((vh_up1 >> i) << 4) & 0x10101010;
++            const int v0_up = vl0_up | vh0_up;
++            const int v1_up = vl1_up | vh1_up;
++            const int dot1_up = dpct::dp4a(v0_up, u0, dpct::dp4a(v1_up, u1, 0));
++            sumf_d_up += d8 * (dot1_up * sc_up[i]);
++            sumf_m_up += d8 * (dot2 * m_up[i]);
++
++            const int vl0_gate = (vl_gate0 >> (4 * i)) & 0x0F0F0F0F;
++            const int vl1_gate = (vl_gate1 >> (4 * i)) & 0x0F0F0F0F;
++            const int vh0_gate = ((vh_gate0 >> i) << 4) & 0x10101010;
++            const int vh1_gate = ((vh_gate1 >> i) << 4) & 0x10101010;
++            const int v0_gate = vl0_gate | vh0_gate;
++            const int v1_gate = vl1_gate | vh1_gate;
++            const int dot1_gate = dpct::dp4a(v0_gate, u0, dpct::dp4a(v1_gate, u1, 0));
++            sumf_d_gate += d8 * (dot1_gate * sc_gate[i]);
++            sumf_m_gate += d8 * (dot2 * m_gate[i]);
++        }
++
++        const sycl::float2 dm_up_f = dms_up->convert<float, sycl::rounding_mode::automatic>();
++        const sycl::float2 dm_gate_f = dms_gate->convert<float, sycl::rounding_mode::automatic>();
++        partial_up   += dm_up_f.x()   * sumf_d_up   - dm_up_f.y()   * sumf_m_up;
++        partial_gate += dm_gate_f.x() * sumf_d_gate - dm_gate_f.y() * sumf_m_gate;
++    }
++};
++
+ template <> struct reorder_vec_dot_q_sycl<GGML_TYPE_Q6_K> {
+     static constexpr ggml_type gtype = GGML_TYPE_Q6_K;
+
+--
+2.43.0

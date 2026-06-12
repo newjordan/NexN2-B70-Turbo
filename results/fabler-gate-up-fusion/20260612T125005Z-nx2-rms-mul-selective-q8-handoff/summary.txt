@@ -1,0 +1,10 @@
+== q5km-ctx0-mode4 mode=4 ==
+avg_ts=87.579052 stddev_ts=0.361026
+== q5km-ctx0-mode2-repeat mode=2 ==
+avg_ts=89.011626 stddev_ts=0.418854
+== q4km-ctx0-mode4 mode=4 ==
+avg_ts=94.321989 stddev_ts=0.613967
+== q5km-ctx0-mode4-repeat mode=4 ==
+avg_ts=87.477788 stddev_ts=0.321629
+== q5km-ctx0-mode0-same-run mode=0 ==
+avg_ts=88.020616 stddev_ts=0.077415

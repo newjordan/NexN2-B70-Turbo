@@ -10,9 +10,10 @@ Date: 2026-06-10
 - Local upstream checkout: `/home/frosty40/llama.cpp-sycl-moe-ready`
 - Upstream PR: https://github.com/ggml-org/llama.cpp/pull/24452
 - Branch: `sycl-moe-reorder-ready`
-- Commit: `a7597d733 sycl: support reordered Q4_K and Q5_K MoE MUL_MAT_ID`
+- Commit: `6b856575 sycl: extend MoE reorder to Q6_K mul_mat_id`
 - Current PR base: `origin/master` at `ac4cddeb0`
-- Patch copy in this repo: `patches/0001-sycl-reorder-on-MoE-for-Q4_K-and-Q5_K-mul_mat_id.patch`
+- Patch copies in this repo: `patches/0001-sycl-reorder-on-MoE-for-Q4_K-and-Q5_K-mul_mat_id.patch`
+  plus the Q6_K reorder portion of `patches/0003-sycl-extend-MoE-reorder-to-Q6_K-mul_mat_id-allow-gra.patch`.
 - Main `/home/frosty40/llama.cpp` checkout remains on `iq3-b70`. Keep
   contribution prep isolated to the dedicated ready/clean worktrees.
 
@@ -29,10 +30,10 @@ Date: 2026-06-10
 
 ## What The Patch Does
 
-- Extends SYCL reorder handling to fused MoE expert `mul_mat_id` for Q4_K/Q5_K.
+- Extends SYCL reorder handling to fused MoE expert `mul_mat_id` for Q4_K/Q5_K/Q6_K.
 - Adds per-expert SoA reorder for 3D expert tensors.
 - Adds a Q5_K reordered DMMV path.
-- Allows the fused MoE MMVQ path to use reordered Q4_K/Q5_K expert weights.
+- Allows the fused MoE MMVQ path to use reordered Q4_K/Q5_K/Q6_K expert weights.
 - Uses reorder-aware Q8_1 quantization for `src1` when the expert weights are
   already reordered.
 - Unsupported 3D reorder cases return `false` and fall back to existing reads
@@ -90,12 +91,13 @@ Date: 2026-06-10
   reorder path, possible prefill improvement, and avoiding fallback once expert
   weights are reordered.
 
-## Follow-up Patches (2026-06-12, fabler branch — private, not for upstream)
+## Follow-up Patches (2026-06-12, fabler branch)
 
-Two further commits exist on local `fabler` (exported as `patches/0002`/`0003`,
-cherry-picked and re-validated on a temp branch over the pinned base —
-714/714 MUL_MAT_ID op tests). These stay in this repository as part of the
-Turbo deployment package; no upstream submission is planned for them.
+Further commits exist on local `fabler`. `0003` supplied the Q6_K reorder portion
+that was folded into the live PR branch and re-validated on a temp branch over
+the pinned base with 714/714 MUL_MAT_ID op tests. `0002` and `0004` stay in this
+repository as part of the Turbo deployment package; no upstream submission is
+planned for those project-local pieces.
 
 - `0002` concat submit-only.
 - `0003` Q6_K MoE reorder + graph-safe `MUL_MAT_ID` compatibility. Recorded
@@ -105,10 +107,10 @@ Turbo deployment package; no upstream submission is planned for them.
 
 ## PR Readiness
 
-Ready to open as a narrow SYCL backend PR.
+Open as a narrow SYCL backend PR.
 
-The PR should be framed as Turbo SYCL kernel coverage for reordered Q4_K/Q5_K
+The PR should be framed as Turbo SYCL kernel coverage for reordered Q4_K/Q5_K/Q6_K
 MoE `mul_mat_id`: per-expert reorder, reordered MMVQ/GEMV dispatch, Q5_K
-reordered DMMV, and safe fallback for unsupported 3D reorder cases. Keep the
-PR description focused on correctness and coverage; use performance numbers only
-as local supporting evidence if reviewers ask.
+reordered DMMV, and safe fallback for unsupported 3D reorder cases. Keep the PR
+description focused on correctness and coverage; use performance numbers only as
+local supporting evidence if reviewers ask.

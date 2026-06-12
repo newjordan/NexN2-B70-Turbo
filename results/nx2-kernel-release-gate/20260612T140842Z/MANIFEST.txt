@@ -1,0 +1,11 @@
+date_utc=20260612T140842Z
+candidate_bin=/home/frosty40/llama.cpp/build/bin
+baseline_bin=same-binary-feature-off
+q5_model=/home/frosty40/models/nex-n2-mini/sweep/NX2-Q5_K_M.gguf
+q4_model=/home/frosty40/models/nex-n2-mini/sweep/NX2-Q4_K_M.gguf
+reps=7
+long_reps=3
+run_longctx=1
+run_ppl=1
+ppl_chunks=30
+run_backend_ops=1

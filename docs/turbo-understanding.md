@@ -13,12 +13,12 @@ text.
 2. A reusable llama.cpp SYCL backend contribution branch for quantized MoE
    expert matmuls. This code extends an existing SYCL optimization called
    weight reorder so it can also be used by the fused MoE `MUL_MAT_ID` fast
-   path for Q4_K and Q5_K expert weights.
+   path for Q4_K, Q5_K, and Q6_K expert weights.
 
-The project-level benchmark is the important headline: the NX2 GGUF variants
-run around 80-86 tok/s decode on the Intel Arc Pro B70 in the retained
-measurements. The backend contribution audit is only for deciding what can be
-claimed about the reusable llama.cpp code contribution.
+The project-level benchmark is the important headline: the retained NX2 GGUF
+variants reach 88.1 tok/s for Q5_K_M and 93.5 tok/s for Q4_K_M on the Intel Arc
+Pro B70. The backend contribution audit is only for deciding what can be claimed
+about the reusable llama.cpp code contribution.
 
 The backend contribution branch changes four llama.cpp files:
 
@@ -92,6 +92,7 @@ New functions:
 
 - `reorder_qw_q4_k_moe`
 - `reorder_qw_q5_k_moe`
+- `reorder_qw_q6_k_moe`
 
 These copy the whole expert tensor to a temporary buffer, then scatter every
 block of every expert into a per-expert reordered layout:
@@ -123,6 +124,7 @@ if (src0->ne[2] > 1) {
     switch (src0->type) {
         case GGML_TYPE_Q4_K: ...
         case GGML_TYPE_Q5_K: ...
+        case GGML_TYPE_Q6_K: ...
     }
 }
 ```
@@ -142,7 +144,7 @@ This is the MoE counterpart to the existing dense `opt_for_reorder`. It checks:
 
 - optimization is enabled
 - device allows reorder
-- `src0` is Q4_K or Q5_K
+- `src0` is Q4_K, Q5_K, or Q6_K
 - tensor has not already been reordered
 
 Then it calls `reorder_qw()` and marks:
@@ -228,7 +230,7 @@ avoid using that tensor. Q4_K already had a reordered DMMV path; Q5_K did not.
 
 ## Runtime Flow
 
-For an eligible Q4_K/Q5_K MoE single-token decode:
+For an eligible Q4_K/Q5_K/Q6_K MoE single-token decode:
 
 ```text
 ggml_sycl_mul_mat_id
@@ -236,7 +238,7 @@ ggml_sycl_mul_mat_id
     shape/type bail checks
     opt_for_reorder_id
       reorder_qw
-        reorder_qw_q4_k_moe or reorder_qw_q5_k_moe
+        reorder_qw_q4_k_moe, reorder_qw_q5_k_moe, or reorder_qw_q6_k_moe
       mark tensor reordered
     quantize src1
       reordered weights: quantize_and_reorder_q8_1_soa
@@ -251,7 +253,7 @@ ggml_sycl_mul_mat_id
 If you are explaining this as the patch author, the honest claim is:
 
 1. I extended existing SYCL dense reorder infrastructure to MoE expert
-   `MUL_MAT_ID` for Q4_K and Q5_K.
+   `MUL_MAT_ID` for Q4_K, Q5_K, and Q6_K.
 2. I added per-expert reorder conversion so each expert slice remains a
    self-contained reordered tensor.
 3. I added a reordered fused MoE MMVQ kernel by combining existing MoE expert
@@ -272,13 +274,13 @@ Supported by retained artifacts:
 - The benchmarked model artifacts are the NX2 variants:
   - `/home/frosty40/models/nex-n2-mini/sweep/NX2-Q4_K_M.gguf`
   - `/home/frosty40/models/nex-n2-mini/sweep/NX2-Q5_K_M.gguf`
-- Project-level throughput is around 80-86 tok/s decode on Arc Pro B70 across
-  the retained NX2 Q4_K_M / Q5_K_M measurements.
-- Fresh reproducible project-level control data is in
-  `results/nx2-controls/20260610T220943Z/` for Q5_K_M:
-  - stock control, reorder off / FA off: 69.84 tok/s at ctx0
-  - deployed Turbo + FA: 81.69 tok/s at ctx0
-  - this reproducible comparison is +17% at ctx0
+- Project-level throughput is 88.1 tok/s for Q5_K_M and 93.5 tok/s for Q4_K_M
+  on Arc Pro B70 in the retained package numbers.
+- Current release-gate control data is in
+  `results/nx2-kernel-release-gate/20260612-existing-artifacts/` for Q5_K_M:
+  - fresh stock control, reorder off / FA off: 68.8 tok/s at ctx0
+  - deployed Turbo + FA + NX2 fused MoE: 88.1 tok/s at ctx0
+  - this reproducible comparison is +28% at ctx0
 - A smaller MoE smoke fixture has been identified for upstream-style repro:
   `Phi-mini-MoE-instruct-Q4_K_M.gguf` (`phimoe 16x3.8B Q4_K - Medium`). It
   loads on the clean SYCL branch and reaches 3D Q4_K expert `MUL_MAT_ID` calls;
@@ -287,7 +289,7 @@ Supported by retained artifacts:
   `results/nx2-path-debug/20260610T223353Z/`; both actual NX2 artifacts reach
   3D expert `MUL_MAT_ID` calls on SYCL.
 - Model package checksums are retained in `results/model-checksums.sha256`.
-- Ready branch is one commit over `ac4cddeb0`.
+- Ready PR branch is at `6b856575` over the current upstream base.
 - `git diff --check` is clean.
 - Targeted `test-backend-ops test -o MUL_MAT_ID`: 714/714 passed.
 - Full backend-op logs are retained for both unpatched base and validated branch:

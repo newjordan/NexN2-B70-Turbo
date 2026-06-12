@@ -1,0 +1,6 @@
+== q5km-ctx0-mode0 shared_tail_mode=0 ==
+avg_ts=87.813798 stddev_ts=0.376900
+== q5km-ctx0-mode5-local-gate shared_tail_mode=5 ==
+avg_ts=87.648319 stddev_ts=0.311622
+== q5km-ctx0-mode6-vec4-local-gate shared_tail_mode=6 ==
+avg_ts=87.554535 stddev_ts=0.439902

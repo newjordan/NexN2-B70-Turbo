@@ -1,4 +1,4 @@
-<img width="1254" height="1254" alt="nx2_b70_turbo_x" src="https://github.com/user-attachments/assets/0670218d-63e6-4fa1-94e0-ffc4f36c53e4" />
+<img width="1254" height="1254" alt="nx2_b70_turbo_x2" src="https://i.imgur.com/7i466U0.jpeg" />
 
 
 
@@ -15,14 +15,27 @@ Canonical report: [`docs/lab-report.md`](docs/lab-report.md).
 | config | decode @ ctx0 |
 |---|---:|
 | fresh stock control: reorder off / FA off | 68.8 t/s |
-| **NexN2 B70 Turbo** (reorder + Flash-Attention) | **85.5 t/s** |
-| fresh reproducible gain | **+24%** |
+| **NexN2 B70 Turbo** (reorder + Flash-Attention + NX2 fused MoE) | **88.1 t/s** |
+| fresh reproducible gain | **+28%** |
 
 2026-06-12: Turbo's reorder now also covers the **Q6_K** `ffn_down_exps` expert weights
 (patches `0002`/`0003`), lifting Q5_K_M from 81.7 to **85.8** t/s and Q4_K_M from 85.7 to
 **91.0** t/s at ctx0 ([`results/fabler-q6k-reorder/`](results/fabler-q6k-reorder/)).
+Patch `0004` now defaults on exact NX2 fused gate/up SwiGLU, post-down weighted
+expert sum, and a fused F32 MoE tail add; the retained Q5_K_M ctx0 path reaches
+**88.1** t/s with PPL unchanged and no retained 131k regression. The broader
+generic gate/up fusion variants remain opt-in profiling modes, including
+shared-expert dense gate/up, activation-Q8 cache, gate/up XOR reduction, vec4
+weighted-sum, local-weight weighted-sum, down-weighted-sum, atomic
+down-weighted-sum, SwiGLU activation variants, gate/up rowpack scheduling,
+gate/up local-Q8 activation caching, gate/up expert-pack scheduling, gate/up
+dual-dot vecdot, combined weighted-tail, gate/up Q8 handoff, exact Q6 down specialization,
+shared-gate-tail, shared-gate-tail local-gate broadcast, shared-gate-sigmoid-tail,
+dispatch guard, and tail-add vec4 plus tail-add+RMS_NORM, RMS_NORM+MUL,
+post-norm Q8 handoff, and selective post-norm Q8 handoff probes that did not
+beat the retained default.
 
-- **Turbo kernel path:** targeted `MUL_MAT_ID` op tests pass (714/714) and PPL is unchanged on the retained NX2 checks.
+- **Turbo kernel path:** current `0004` targeted `MUL_MAT_ID` op tests pass (690/690) and PPL is unchanged on the retained NX2 checks.
 - Serves an **OpenAI-compatible** endpoint — drop-in for [opencode](serving/opencode.json) and [Hermes Agent](serving/hermes.md).
 
 ## The Pareto frontier (accuracy × speed)
@@ -31,8 +44,8 @@ Accuracy = KL-divergence + top-1 agreement of each quant's logits vs a **Q6_K re
 
 | quant | size | bpw | mean KLD ↓ | top-1 | **decode t/s** | prefill t/s |
 |---|---:|---:|---:|---:|---:|---:|
-| **Q5_K_M** ⭐ winner | 23.0 GB | 5.71 | **0.0201** | 94.0% | **85.8**¹ | 1139 |
-| **Q4_K_M** ⚡ fastest | 19.7 GB | 4.88 | 0.0389 | 91.6% | **91.0**¹ | 1131 |
+| **Q5_K_M** ⭐ winner | 23.0 GB | 5.71 | **0.0201** | 94.0% | **88.1**¹ | 1139 |
+| **Q4_K_M** ⚡ fastest | 19.7 GB | 4.88 | 0.0389 | 91.6% | **93.5**¹ | 1131 |
 | Q4_K_dyn (Unsloth-style) | 21.3 GB | 5.27 | 0.0277 | 93.1% | 78.3 | 1136 |
 | IQ4_XS | 17.4 GB | 4.32 | 0.0466 | 90.8% | 52.8 | 1105 |
 | Q3_K_dyn | 17.1 GB | 4.24 | 0.0848 | 88.0% | 64.6 | 892 |
@@ -41,9 +54,10 @@ Accuracy = KL-divergence + top-1 agreement of each quant's logits vs a **Q6_K re
 
 **Q5_K_M** is the all-rounder: best accuracy under Q6 and near-fastest decode. **Q4_K_M** is the max-speed option.
 
-¹ Decode re-measured 2026-06-12 with the Q6_K MoE reorder (patch `0003`); the other rows
-retain the original sweep numbers and would also gain where their expert mixes use
-Q4_K/Q5_K/Q6_K `down_exps`.
+¹ Decode re-measured 2026-06-12. Q4_K_M uses the Q6_K MoE reorder result (patch
+`0003`); Q4_K_M/Q5_K_M also include the default-on NX2 fused gate/up, weighted-sum,
+and tail-add specializations from patch `0004`. The other rows retain the original sweep numbers and would also gain where
+their expert mixes use Q4_K/Q5_K/Q6_K `down_exps`.
 
 **The design follows two measured facts:**
 1. **Speed comes from better kernels.** Q4_K/Q5_K use the optimized reorder-capable kernels: Q4_K_M (4.88 bpw) decodes at 85.7 t/s, ahead of the lower-bit IQ4_XS (4.32 bpw) at 52.8. The lever is the kernel — so that's where Turbo invests.
@@ -109,7 +123,7 @@ See [`docs/methodology.md`](docs/methodology.md) for the ground-truth setup: bf1
 - `mempalace/` — rolling research memory substrates: `lean/` (files + FTS5 + local embeddings + MemGPT-style controller) and `letta/` (Letta against local endpoints)
 
 ---
-Hardware: Intel Arc Pro B70 (Battlemage, `8086:e223`), 32 GB GDDR6, ~600 GB/s, Ubuntu 24.04, oneAPI / SYCL (icpx 2026.0). Built on [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT); the SYCL MoE reorder path was developed and validated locally on the B70.
+Hardware: Intel Arc Pro B70 (Battlemage, `8086:e223`), 32 GB GDDR6, ~600 GB/s, Ubuntu 24.04, oneAPI / SYCL (icpx 2026.0). Built on [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT); the retained B70 path validates reordered MoE expert GEMV for Q4_K/Q5_K/Q6_K plus the NX2 gate/up, weighted-sum, and tail-add fusions.
 
 ## Credits & licenses
 

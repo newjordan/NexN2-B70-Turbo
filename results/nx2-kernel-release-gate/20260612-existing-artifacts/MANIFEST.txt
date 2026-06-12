@@ -1,0 +1,7 @@
+source=retained artifacts copied into release-gate naming convention
+baseline-q5-ctx0=results/fabler-gate-up-fusion/20260612T072752Z-nx2-fused-specialize/q5km-ctx0-default-nx2-specialize.json
+candidate-q5-ctx0=results/fabler-gate-up-fusion/20260612T091359Z-nx2-tail-add-fusion/q5_ctx0_tail_add_on.json
+baseline-q4-ctx0=results/fabler-gate-up-fusion/20260612T072752Z-nx2-fused-specialize/q4km-ctx0-default-nx2-specialize.json
+candidate-q4-ctx0=results/fabler-gate-up-fusion/20260612T091359Z-nx2-tail-add-fusion/q4_ctx0_tail_add_on.json
+baseline-q5-131k=results/fabler-gate-up-fusion/20260612T072752Z-nx2-fused-specialize/q5km-131k-default-nx2-specialize.json
+candidate-q5-131k=results/fabler-gate-up-fusion/20260612T091359Z-nx2-tail-add-fusion/q5_131k_tail_add_on.json

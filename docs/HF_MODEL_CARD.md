@@ -19,7 +19,7 @@ tags:
 ---
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/0670218d-63e6-4fa1-94e0-ffc4f36c53e4" alt="NexN2 B70 Turbo" width="440">
+  <img src="https://i.imgur.com/7i466U0.jpeg" alt="NexN2 B70 Turbo" width="440">
 </p>
 
 # NexN2 B70 Turbo — Nex-N2-mini GGUF
@@ -34,8 +34,8 @@ Code, kernel patch, full methodology, and reproducible benchmarks: **https://git
 
 | file | quant | size | bpw | mean KLD ↓ vs Q6_K | top-1 | decode t/s (B70) |
 |---|---|---:|---:|---:|---:|---:|
-| `Nex-N2-mini-B70-Turbo-Q5_K_M.gguf` ⭐ | Q5_K_M | 23.0 GB | 5.71 | **0.0201** | 94.0% | **85.8** |
-| `Nex-N2-mini-B70-Turbo-Q4_K_M.gguf` ⚡ | Q4_K_M | 19.7 GB | 4.88 | 0.0389 | 91.6% | **91.0** |
+| `Nex-N2-mini-B70-Turbo-Q5_K_M.gguf` ⭐ | Q5_K_M | 23.0 GB | 5.71 | **0.0201** | 94.0% | **88.1** |
+| `Nex-N2-mini-B70-Turbo-Q4_K_M.gguf` ⚡ | Q4_K_M | 19.7 GB | 4.88 | 0.0389 | 91.6% | **93.5** |
 | `Nex-N2-mini-B70-Turbo-Q4_K_dyn.gguf` | Q4_K_dyn | 21.3 GB | 5.27 | 0.0277 | 93.1% | 78.3 |
 | `Nex-N2-mini-B70-Turbo-IQ4_XS.gguf` | IQ4_XS | 17.4 GB | 4.32 | 0.0466 | 90.8% | 52.8 |
 | `Nex-N2-mini-B70-Turbo-Q3_K_dyn.gguf` | Q3_K_dyn | 17.1 GB | 4.24 | 0.0848 | 88.0% | 64.6 |
@@ -49,19 +49,34 @@ Code, kernel patch, full methodology, and reproducible benchmarks: **https://git
 
 With the project's Turbo package on Arc Pro B70:
 
-| config | decode @ ctx0 |
-|---|---:|
-| fresh stock control: reorder off / FA off | 68.8 t/s |
-| **NexN2 B70 Turbo** (reorder + FA) | **85.5 t/s** |
+| config | decode @ ctx0 | decode @ 131k |
+|---|---:|---:|
+| fresh stock control: reorder off / FA off | 68.8 t/s | 20.0 t/s |
+| **NexN2 B70 Turbo** (reorder + FA + NX2 fused MoE) | **88.1 t/s** | **42.3 t/s** |
 
 Q5_K_M/Q4_K_M decode updated 2026-06-12 with the Turbo patch chain's Q6_K MoE reorder
-(`patches/0003` in the GitHub repo); the other quants retain the original sweep numbers.
+(`patches/0003` in the GitHub repo). `patches/0004` adds default-on exact NX2
+fused gate/up SwiGLU, post-down weighted-sum fusion, and fused F32 MoE tail add
+(Q5_K_M ctx0 reaches 88.1 t/s in the retained default) while leaving the broader
+generic gate/up fusion experiments as opt-in profiling modes. Shared-expert
+dense gate/up, activation-Q8 cache, gate/up XOR reduction, vec4 weighted-sum,
+local-weight weighted-sum, down-weighted-sum, atomic down-weighted-sum, SwiGLU
+activation variants, gate/up rowpack scheduling, gate/up local-Q8 activation
+caching, gate/up expert-pack scheduling, gate/up dual-dot vecdot, weighted-tail, dispatch guard, gate/up Q8 handoff, exact Q6 down specialization, shared-gate-tail,
+shared-gate-tail local-gate broadcast, shared-gate-sigmoid-tail, tail-add vec4,
+tail-add+RMS_NORM, RMS_NORM+MUL, post-norm Q8 handoff, and selective post-norm
+Q8 handoff probes are also opt-in only after failing to beat the retained default.
+
+Accuracy guardrail for the retained kernel path: Q5_K_M 30-chunk WikiText PPL
+showed no measured loss in the fresh release-gate run (5.5682 +/- 0.15248
+baseline vs 5.5676 +/- 0.15244 candidate), and targeted `MUL_MAT_ID` backend
+ops passed 690/690.
 
 ## Run it (llama.cpp)
 
 ```bash
 # build llama.cpp with the SYCL backend (oneAPI/icpx); see the GitHub repo for the Turbo kernel patch
-llama-server -m Nex-N2-mini-B70-Turbo-Q5_K_M.gguf -ngl 99 -fa on \
+llama-server -m Nex-N2-mini-B70-Turbo-Q5_K_M.gguf -ngl 99 -fa on -c 131072 \
   -ctk f16 -ctv f16 --jinja --host 127.0.0.1 --port 8090
 ```
 

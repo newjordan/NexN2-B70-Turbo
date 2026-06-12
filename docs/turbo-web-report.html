@@ -352,18 +352,18 @@
         <div class="cards">
           <div class="card">
             <div class="label">Current control</div>
-            <div class="value">68.84 → 85.48</div>
-            <div class="note">ctx0 tok/s, fresh 2026-06-12 run (Q6_K MoE reorder)</div>
+            <div class="value">68.84 → 88.08</div>
+            <div class="note">ctx0 tok/s, fresh 2026-06-12 run (Q6_K reorder + NX2 fused MoE)</div>
           </div>
           <div class="card">
             <div class="label">Targeted validation</div>
-            <div class="value">714 / 714</div>
-            <div class="note">MUL_MAT_ID vs CPU reference</div>
+            <div class="value">690 / 690</div>
+            <div class="note">retained 0004 MUL_MAT_ID guardrail</div>
           </div>
           <div class="card">
             <div class="label">Turbo SYCL kernel</div>
-            <div class="value">a7597d7</div>
-            <div class="note">Q4_K/Q5_K MoE MUL_MAT_ID</div>
+            <div class="value">6b85657</div>
+            <div class="note">Q4_K/Q5_K/Q6_K MoE MUL_MAT_ID PR branch</div>
           </div>
         </div>
 
@@ -375,6 +375,10 @@
           <div class="status ok">
             <strong>Validation retained</strong>
             <span>Backend-op and perplexity checks support the SYCL MoE reorder path.</span>
+          </div>
+          <div class="status ok">
+            <strong>NX2 specialization retained</strong>
+            <span>Patch 0004 defaults on exact NX2 fused gate+up SwiGLU, weighted expert sum, and tail add: Q5_K_M ctx0 85.04 → 88.08 t/s, with PPL flat. Shared-expert gate/up, activation-Q8 cache, gate/up XOR reduction, vec4 weighted-sum, local-weight weighted-sum, down-weighted-sum, atomic down-weighted-sum, SwiGLU activation variants, gate/up rowpack scheduling, gate/up local-Q8 activation caching, gate/up expert-pack scheduling, gate/up dual-dot vecdot, gate/up Q8 handoff, exact Q6 down specialization, combined weighted-tail, shared-gate-tail, shared-gate-tail local-gate broadcast, shared-gate-sigmoid-tail, dispatch guard, tail-add vec4, tail-add+RMS_NORM, RMS_NORM+MUL, post-norm Q8 handoff, and selective post-norm Q8 handoff probes are opt-in after failing to beat the retained default.</span>
           </div>
         </div>
 

@@ -1,0 +1,12 @@
+== q5km-ctx0-mode1-retained nx2_mode=1 ==
+avg_ts=88.172667 stddev_ts=0.047993
+== q5km-ctx0-mode8-local-q8 nx2_mode=8 ==
+avg_ts=88.196572 stddev_ts=0.052670
+== q5km-ctx0-mode8-local-q8-repeat nx2_mode=8 ==
+avg_ts=87.666032 stddev_ts=0.429955
+== q5km-ctx0-mode1-retained-repeat nx2_mode=1 ==
+avg_ts=87.667224 stddev_ts=0.337990
+== q4km-ctx0-mode8-local-q8 nx2_mode=8 ==
+avg_ts=90.079569 stddev_ts=0.709645
+== q4km-ctx0-mode1-retained nx2_mode=1 ==
+avg_ts=93.905199 stddev_ts=0.106109
