@@ -2,6 +2,15 @@
 
 Date: 2026-06-10
 
+> **Addendum 2026-06-12 (fabler campaign):** Turbo's MoE reorder now also covers the
+> Q6_K `ffn_down_exps` expert weights (patches `0002`/`0003`). Fresh same-harness
+> controls: stock 68.84 → Turbo **85.48 t/s** at ctx0 (**+24%**); Q4_K_M reaches
+> **91.0 t/s**. PPL and `MUL_MAT_ID` op tests unchanged (714/714 on the pinned-base
+> chain). SYCL graph replay was evaluated and rejected (5× slowdown on this driver;
+> graphs remain default-off). Evidence:
+> [`../results/fabler-q6k-reorder/`](../results/fabler-q6k-reorder/). The numbers
+> below are the retained 2026-06-10 measurements.
+
 ## Summary
 
 NexN2 B70 Turbo is a local deployment package for Nex-N2-mini on Intel Arc Pro

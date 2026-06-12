@@ -1,10 +1,14 @@
 # NX2 First-Token Timing
 
-Retained run:
+Retained runs:
 
 ```text
-results/nx2-first-token/20260610T230504Z/
+results/nx2-first-token/20260610T230504Z/   (0001-era build)
+results/nx2-first-token/20260612T054428Z/   (full 0001-0003 chain, incl. Q6_K MoE reorder)
 ```
+
+The 2026-06-12 rerun shows ~31 ms of one-time first-token lazy-reorder cost with
+the expanded (Q4_K/Q5_K/Q6_K) coverage -- still no meaningful penalty.
 
 Command source:
 

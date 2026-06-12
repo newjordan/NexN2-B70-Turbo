@@ -19,15 +19,17 @@ Decode is kernel-limited on this stack: Q4_K_M (4.88 bpw) decodes at 85.7 t/s wh
 
 ## Project control data
 The fresh reproducible control comparison is the Q5_K_M rerun in
-`results/nx2-controls/20260610T220943Z/`, measured on the NX2 GGUF artifact and
-Arc Pro B70:
+`results/nx2-controls/20260612T052635Z/`, measured on the NX2 GGUF artifact and
+Arc Pro B70 with the full patch chain (`0001`–`0003`, including the Q6_K MoE
+reorder):
 
 | config | ctx0 decode |
 |---|---:|
-| stock control: reorder off / FA off | 69.84 t/s |
-| deployed: Turbo + FA | 81.69 t/s |
+| stock control: reorder off / FA off | 68.84 t/s |
+| deployed: Turbo + FA | 85.48 t/s |
 
-This is the reproducible project-level before/after: +17% at ctx0.
+This is the reproducible project-level before/after: +24% at ctx0. (The prior
+0001-only control, +17%, is retained in `results/nx2-controls/20260610T220943Z/`.)
 
 NX2 path-debug evidence was retained in
 `results/nx2-path-debug/20260610T223353Z/`. Q4_K_M and Q5_K_M both reach SYCL

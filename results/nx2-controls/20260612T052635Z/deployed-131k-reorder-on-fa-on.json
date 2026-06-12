@@ -22,7 +22,7 @@
     "split_mode": "layer",
     "main_gpu": 0,
     "no_kv_offload": false,
-    "flash_attn": 0,
+    "flash_attn": 1,
     "devices": "auto",
     "tensor_split": "0.00",
     "tensor_buft_overrides": "none",
@@ -36,12 +36,12 @@
     "n_prompt": 0,
     "n_gen": 128,
     "n_depth": 131072,
-    "test_time": "2026-06-12T05:28:29Z",
-    "avg_ns": 6393641235,
-    "stddev_ns": 9839704,
-    "avg_ts": 20.019929,
-    "stddev_ts": 0.030818,
-    "samples_ns": [ 6380057012, 6405857716, 6396744366, 6388173583, 6397373502 ],
-    "samples_ts": [ 20.0625, 19.9817, 20.0102, 20.037, 20.0082 ]
+    "test_time": "2026-06-12T05:33:40Z",
+    "avg_ns": 3042865212,
+    "stddev_ns": 1792947,
+    "avg_ts": 42.065628,
+    "stddev_ts": 0.024774,
+    "samples_ns": [ 3040390526, 3042409568, 3045383178, 3042859726, 3043283064 ],
+    "samples_ts": [ 42.0999, 42.0719, 42.0308, 42.0657, 42.0598 ]
   }
 ]

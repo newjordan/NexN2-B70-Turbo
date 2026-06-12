@@ -34,8 +34,8 @@ Code, kernel patch, full methodology, and reproducible benchmarks: **https://git
 
 | file | quant | size | bpw | mean KLD ↓ vs Q6_K | top-1 | decode t/s (B70) |
 |---|---|---:|---:|---:|---:|---:|
-| `Nex-N2-mini-B70-Turbo-Q5_K_M.gguf` ⭐ | Q5_K_M | 23.0 GB | 5.71 | **0.0201** | 94.0% | **81.7** |
-| `Nex-N2-mini-B70-Turbo-Q4_K_M.gguf` ⚡ | Q4_K_M | 19.7 GB | 4.88 | 0.0389 | 91.6% | **85.7** |
+| `Nex-N2-mini-B70-Turbo-Q5_K_M.gguf` ⭐ | Q5_K_M | 23.0 GB | 5.71 | **0.0201** | 94.0% | **85.8** |
+| `Nex-N2-mini-B70-Turbo-Q4_K_M.gguf` ⚡ | Q4_K_M | 19.7 GB | 4.88 | 0.0389 | 91.6% | **91.0** |
 | `Nex-N2-mini-B70-Turbo-Q4_K_dyn.gguf` | Q4_K_dyn | 21.3 GB | 5.27 | 0.0277 | 93.1% | 78.3 |
 | `Nex-N2-mini-B70-Turbo-IQ4_XS.gguf` | IQ4_XS | 17.4 GB | 4.32 | 0.0466 | 90.8% | 52.8 |
 | `Nex-N2-mini-B70-Turbo-Q3_K_dyn.gguf` | Q3_K_dyn | 17.1 GB | 4.24 | 0.0848 | 88.0% | 64.6 |
@@ -51,8 +51,11 @@ With the project's Turbo package on Arc Pro B70:
 
 | config | decode @ ctx0 |
 |---|---:|
-| fresh stock control: reorder off / FA off | 69.8 t/s |
-| **NexN2 B70 Turbo** (reorder + FA) | **81.7 t/s** |
+| fresh stock control: reorder off / FA off | 68.8 t/s |
+| **NexN2 B70 Turbo** (reorder + FA) | **85.5 t/s** |
+
+Q5_K_M/Q4_K_M decode updated 2026-06-12 with the Turbo patch chain's Q6_K MoE reorder
+(`patches/0003` in the GitHub repo); the other quants retain the original sweep numbers.
 
 ## Run it (llama.cpp)
 

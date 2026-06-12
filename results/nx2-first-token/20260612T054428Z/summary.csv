@@ -1,0 +1,13 @@
+label,rep,disable_opt,n_predict,load_ms,prompt_eval_ms,eval_ms,eval_runs
+stock-first-token,1,1,1,786.42,785.47,0.00,1
+stock-first-token,2,1,1,772.65,771.84,0.00,1
+stock-first-token,3,1,1,772.25,771.45,0.00,1
+turbo-first-token,1,0,1,801.22,800.42,0.00,1
+turbo-first-token,2,0,1,803.05,802.18,0.00,1
+turbo-first-token,3,0,1,811.32,807.45,0.00,1
+stock-steady,1,1,129,778.79,777.96,1835.34,128
+stock-steady,2,1,129,787.63,786.81,1867.10,128
+stock-steady,3,1,129,777.96,777.15,1847.42,128
+turbo-steady,1,0,129,805.23,804.41,1654.81,128
+turbo-steady,2,0,129,830.85,829.99,1631.94,128
+turbo-steady,3,0,129,788.48,787.67,1656.81,128
