@@ -115,7 +115,7 @@ See [`docs/methodology.md`](docs/methodology.md) for the ground-truth setup: bf1
 - `mempalace/` — rolling research memory substrates: `lean/` (files + FTS5 + local embeddings + MemGPT-style controller) and `letta/` (Letta against local endpoints)
 
 ---
-Hardware: Intel Arc Pro B70 (Battlemage, `8086:e223`), 32 GB GDDR6, ~600 GB/s, Ubuntu 24.04, oneAPI / SYCL (icpx 2026.0). Built on [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT); the reorder-on-MoE kernel was developed and validated locally on the B70.
+Hardware: Intel Arc Pro B70 (Battlemage, `8086:e223`), 32 GB GDDR6, ~600 GB/s, Ubuntu 24.04, oneAPI / SYCL (icpx 2026.0). Built on [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT); the retained B70 path validates reordered MoE expert GEMV for Q4_K/Q5_K/Q6_K plus the NX2 gate/up, weighted-sum, and tail-add fusions.
 
 ## Credits & licenses
 
