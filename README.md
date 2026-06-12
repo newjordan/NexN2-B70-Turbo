@@ -1,4 +1,4 @@
-<img width="1254" height="1254" alt="nx2_b70_turbo_x" src="https://github.com/user-attachments/assets/0670218d-63e6-4fa1-94e0-ffc4f36c53e4" />
+<img width="1254" height="1254" alt="nx2_b70_turbo_x2" src="https://i.imgur.com/7i466U0.jpeg" />
 
 
 
