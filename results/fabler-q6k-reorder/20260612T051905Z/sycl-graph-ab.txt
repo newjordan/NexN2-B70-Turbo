@@ -1,0 +1,2 @@
+graph_disabled=1 "avg_ts": 81.279653
+graph_disabled=0 "avg_ts": 15.542875

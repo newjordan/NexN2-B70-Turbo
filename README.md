@@ -14,9 +14,13 @@ Canonical report: [`docs/lab-report.md`](docs/lab-report.md).
 
 | config | decode @ ctx0 |
 |---|---:|
-| fresh stock control: reorder off / FA off | 69.8 t/s |
-| **NexN2 B70 Turbo** (reorder + Flash-Attention) | **81.7 t/s** |
-| fresh reproducible gain | **+17%** |
+| fresh stock control: reorder off / FA off | 68.8 t/s |
+| **NexN2 B70 Turbo** (reorder + Flash-Attention) | **85.5 t/s** |
+| fresh reproducible gain | **+24%** |
+
+2026-06-12: Turbo's reorder now also covers the **Q6_K** `ffn_down_exps` expert weights
+(patches `0002`/`0003`), lifting Q5_K_M from 81.7 to **85.8** t/s and Q4_K_M from 85.7 to
+**91.0** t/s at ctx0 ([`results/fabler-q6k-reorder/`](results/fabler-q6k-reorder/)).
 
 - **Turbo kernel path:** targeted `MUL_MAT_ID` op tests pass (714/714) and PPL is unchanged on the retained NX2 checks.
 - Serves an **OpenAI-compatible** endpoint — drop-in for [opencode](serving/opencode.json) and [Hermes Agent](serving/hermes.md).
@@ -27,8 +31,8 @@ Accuracy = KL-divergence + top-1 agreement of each quant's logits vs a **Q6_K re
 
 | quant | size | bpw | mean KLD ↓ | top-1 | **decode t/s** | prefill t/s |
 |---|---:|---:|---:|---:|---:|---:|
-| **Q5_K_M** ⭐ winner | 23.0 GB | 5.71 | **0.0201** | 94.0% | **81.7** | 1139 |
-| **Q4_K_M** ⚡ fastest | 19.7 GB | 4.88 | 0.0389 | 91.6% | **85.7** | 1131 |
+| **Q5_K_M** ⭐ winner | 23.0 GB | 5.71 | **0.0201** | 94.0% | **85.8**¹ | 1139 |
+| **Q4_K_M** ⚡ fastest | 19.7 GB | 4.88 | 0.0389 | 91.6% | **91.0**¹ | 1131 |
 | Q4_K_dyn (Unsloth-style) | 21.3 GB | 5.27 | 0.0277 | 93.1% | 78.3 | 1136 |
 | IQ4_XS | 17.4 GB | 4.32 | 0.0466 | 90.8% | 52.8 | 1105 |
 | Q3_K_dyn | 17.1 GB | 4.24 | 0.0848 | 88.0% | 64.6 | 892 |
@@ -37,24 +41,31 @@ Accuracy = KL-divergence + top-1 agreement of each quant's logits vs a **Q6_K re
 
 **Q5_K_M** is the all-rounder: best accuracy under Q6 and near-fastest decode. **Q4_K_M** is the max-speed option.
 
+¹ Decode re-measured 2026-06-12 with the Q6_K MoE reorder (patch `0003`); the other rows
+retain the original sweep numbers and would also gain where their expert mixes use
+Q4_K/Q5_K/Q6_K `down_exps`.
+
 **The design follows two measured facts:**
 1. **Speed comes from better kernels.** Q4_K/Q5_K use the optimized reorder-capable kernels: Q4_K_M (4.88 bpw) decodes at 85.7 t/s, ahead of the lower-bit IQ4_XS (4.32 bpw) at 52.8. The lever is the kernel — so that's where Turbo invests.
 2. **The whole frontier sits far below the ~600 GB/s roofline → it's kernel-limited.** Exactly what Turbo targets.
 
 ## Turbo: reorder-on-MoE
 
-NexN2's decode bottleneck is the fused MoE expert GEMV (`mul_mat_id`). Upstream llama.cpp has a SYCL "reorder" (Structure-of-Arrays weight layout) that the *dense* path uses; **Turbo extends it to the per-expert MoE GEMV** for Q4_K and Q5_K across every decode/prefill sub-path (decode GEMV, dense mmvq, DMMV, and the dequant-to-fp16/fp32 GEMM path), adding a Q5_K reorder DMMV kernel and per-expert reorder converters. Code: [`patches/0001`](patches/).
+NexN2's decode bottleneck is the fused MoE expert GEMV (`mul_mat_id`). Upstream llama.cpp has a SYCL "reorder" (Structure-of-Arrays weight layout) that the *dense* path uses; **Turbo extends it to the per-expert MoE GEMV** for **Q4_K, Q5_K and Q6_K** across every decode/prefill sub-path (decode GEMV, dense mmvq, DMMV, and the dequant-to-fp16/fp32 GEMM path), adding a Q5_K reorder DMMV kernel and per-expert reorder converters. Q6_K matters because both flagship mixes store `ffn_down_exps` as Q6_K — about a third of the expert bytes. Code: [`patches/`](patches/) (`0001` + `0003`).
 
-Clean A/B (`llama-bench`, reorder ON vs OFF) — [`results/longctx-reorder.csv`](results/longctx-reorder.csv):
+Clean A/B (`llama-bench`, reorder ON vs OFF, same build, FA on, 2026-06-12 — raw in [`results/fabler-q6k-reorder/`](results/fabler-q6k-reorder/)):
 
-| ctx depth | Q5_K_M off → on | gain | Q4_K_M off → on | gain |
-|---|---|---:|---|---:|
-| 0 | 70.07 → 82.84 | **+18.2%** | 74.53 → 87.45 | **+17.3%** |
-| 4096 | 65.47 → 76.00 | +16.1% | 69.33 → 79.61 | +14.8% |
-| 16384 | 55.65 → 62.59 | +12.5% | 58.28 → 65.26 | +12.0% |
-| 32768 | 46.21 → 51.01 | +10.4% | 47.94 → 52.63 | +9.8% |
+| ctx depth | Q5_K_M off → on | gain |
+|---|---|---:|
+| 0 | 68.91 → 85.09 | **+23.5%** |
+| 4096 | 65.82 → 80.78 | +22.7% |
+| 16384 | 62.25 → 75.64 | +21.5% |
+| 32768 | 56.95 → 67.71 | +18.9% |
 
-The retained checks show zero accuracy cost: `test-backend-ops` MUL_MAT_ID passes 714/714 vs the CPU reference and perplexity is unchanged (5.5643 vs 5.5662 ±0.15).
+(The pre-Q6_K table — +18.2/+16.1/+12.5/+10.4% — is retained in
+[`results/longctx-reorder.csv`](results/longctx-reorder.csv).)
+
+The retained checks show zero accuracy cost: `test-backend-ops` MUL_MAT_ID passes 714/714 vs the CPU reference (full `0001`+`0002`+`0003` chain on the pinned base) and perplexity is statistically unchanged (stock 5.5643 ± 0.152 → full chain 5.5723 ± 0.153 on the 30-chunk spot check).
 
 The llama.cpp backend contribution audit in [`results/upstream-pr/SUMMARY.md`](results/upstream-pr/SUMMARY.md) is validation detail for a reusable SYCL MoE reorder component. Turbo remains the full deployment, model artifact, runtime, and validation package measured on the NX2 GGUF variants.
 
@@ -75,7 +86,7 @@ NexN2 is a **reasoning model** — it emits a `<think>` trace first, so give it 
 ```bash
 git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp
 git checkout ac4cddeb0
-git am /path/to/NexN2-B70-Turbo/patches/0001-*.patch
+git am /path/to/NexN2-B70-Turbo/patches/000*.patch
 cmake -B build -DGGML_SYCL=ON -DGGML_SYCL_F16=ON -DCMAKE_CXX_COMPILER=icpx
 cmake --build build -j
 ```

@@ -90,6 +90,19 @@ Date: 2026-06-10
   reorder path, possible prefill improvement, and avoiding fallback once expert
   weights are reordered.
 
+## Follow-up Patches (2026-06-12, fabler branch — private, not for upstream)
+
+Two further commits exist on local `fabler` (exported as `patches/0002`/`0003`,
+cherry-picked and re-validated on a temp branch over the pinned base —
+714/714 MUL_MAT_ID op tests). These stay in this repository as part of the
+Turbo deployment package; no upstream submission is planned for them.
+
+- `0002` concat submit-only.
+- `0003` Q6_K MoE reorder + graph-safe `MUL_MAT_ID` compatibility. Recorded
+  negative result: SYCL graph replay is a 5x slowdown on B70 / Level Zero 1.15
+  because per-token graph update throws on a topology mismatch — graphs stay
+  default-off; never claim a graph speedup on this stack.
+
 ## PR Readiness
 
 Ready to open as a narrow SYCL backend PR.

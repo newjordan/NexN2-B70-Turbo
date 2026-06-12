@@ -1,0 +1,32 @@
+From ad514e6915350ce06b6121259aae53cb25537943 Mon Sep 17 00:00:00 2001
+From: newjordan <newjordan@gmail.com>
+Date: Thu, 11 Jun 2026 23:56:45 -0500
+Subject: [PATCH 2/3] sycl: make concat submit-only (drop host waits on
+ in-order queue)
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ ggml/src/ggml-sycl/concat.cpp | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/ggml/src/ggml-sycl/concat.cpp b/ggml/src/ggml-sycl/concat.cpp
+index d16215bc9..4dbf78bf2 100644
+--- a/ggml/src/ggml-sycl/concat.cpp
++++ b/ggml/src/ggml-sycl/concat.cpp
+@@ -174,8 +174,11 @@ void concat_impl_sycl(ggml_backend_sycl_context & ctx, ggml_tensor *dst) {
+             const size_t size0 = ggml_nbytes(src0);
+             const size_t size1 = ggml_nbytes(src1);
+ 
+-            SYCL_CHECK(CHECK_TRY_ERROR(stream->memcpy(dst_d, src0_d, size0).wait()));
+-            SYCL_CHECK(CHECK_TRY_ERROR(stream->memcpy(dst_d + size0 / type_size, src1_d, size1).wait()));
++            // No host wait: the queue is in-order, so downstream consumers of dst are already
++            // ordered after these copies. Keeping this submit-only also makes CONCAT safe to
++            // record into a SYCL graph (wait() is not allowed while recording).
++            SYCL_CHECK(CHECK_TRY_ERROR(stream->memcpy(dst_d, src0_d, size0)));
++            SYCL_CHECK(CHECK_TRY_ERROR(stream->memcpy(dst_d + size0 / type_size, src1_d, size1)));
+         }
+     } else {
+         concat_T_sycl_non_cont<T>(stream, (const char *) src0->data, (const char *) src1->data, (char *) dst->data,
+-- 
+2.43.0
+

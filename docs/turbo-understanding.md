@@ -332,6 +332,34 @@ Open audit items, kept separate from the project benchmark:
 - Is this worth upstreaming as a focused correctness/coverage change even if the
   main NX2 project result comes from the model artifacts and serving stack?
 
+## Fabler Extension (2026-06-12)
+
+Two follow-up backend changes, exported as `patches/0002` and `patches/0003`
+(validated in `results/fabler-q6k-reorder/`):
+
+1. **Q6_K MoE reorder.** The NX2 Q4_K_M/Q5_K_M mixes store `ffn_down_exps` as
+   Q6_K (`ne=[512, 2048, 256]`) — roughly a third of the expert bytes — and it
+   previously ran the non-reordered fused MMVQ. `reorder_qw_q6_k_moe` scatters
+   every expert block into a per-expert `[ql][qh][scales][d]` SoA, and the fused
+   dispatch gains a `Q6_K` reorder case. All dense readers for reordered Q6_K
+   (mmvq, DMMV, dequant-GEMM) already existed upstream, so coverage is complete.
+   ctx0 decode: Q5_K_M 81.1 → 85.8 t/s, Q4_K_M 85.7 → 91.0 t/s; PPL and
+   MUL_MAT_ID op tests unchanged.
+2. **Concat submit-only + graph-safe MUL_MAT_ID.** `ggml_sycl_op_concat` dropped
+   two host waits that the in-order queue makes redundant (17 host syncs/token on
+   NexN2). `check_graph_compatibility` now admits `MUL_MAT_ID` nodes that will
+   take the fused no-host-sync path — the ids stay on device, and the
+   reorder-pending check keeps the one-time lazy reorder out of recordings (the
+   first eager pass triggers it).
+
+**Negative result, recorded on purpose:** with `GGML_SYCL_DISABLE_GRAPH=0` the
+full NexN2 decode graph records cleanly, but the per-token executable-graph
+update throws `Cannot update using a graph with a different topology. Mismatch
+found in the number of nodes`, so the backend re-finalizes ~3.7k nodes every
+token and decode collapses to 15.5 t/s (vs 81.3 graphs-off). SYCL graphs stay
+default-off on this stack; the graph-safety work is kept because it is correct
+and free when graphs are off.
+
 ## Next Best Learning Exercise
 
 Read these in order:

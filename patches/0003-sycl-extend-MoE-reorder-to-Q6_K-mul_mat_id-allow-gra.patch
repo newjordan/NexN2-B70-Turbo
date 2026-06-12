@@ -1,0 +1,221 @@
+From b422fbe7e3f2f958d70df28ffc8c501720106338 Mon Sep 17 00:00:00 2001
+From: newjordan <newjordan@gmail.com>
+Date: Fri, 12 Jun 2026 00:06:46 -0500
+Subject: [PATCH 3/3] sycl: extend MoE reorder to Q6_K mul_mat_id; allow
+ graph-safe MUL_MAT_ID under SYCL graphs
+
+Q6_K MoE expert weights (e.g. ffn_down_exps in Q4_K_M/Q5_K_M mixes) now get the
+per-expert SoA reorder + fused reordered MMVQ, reusing the existing dense Q6_K
+reorder traits/readers (dense mmvq, DMMV, dequant GEMM all already reorder-aware).
+
+NX2 B70 ctx0 decode: Q5_K_M 81.1 -> 85.8 t/s (+5.9%), Q4_K_M 85.7 -> 91.0 (+6.2%).
+MUL_MAT_ID op tests 690/690 vs CPU; PPL spot check unchanged (5.5723+/-0.153 vs
+5.5643+/-0.152).
+
+Also: check_graph_compatibility now admits MUL_MAT_ID nodes that take the fused
+no-host-sync TG path (ids stay on device; lazy reorder must already have run).
+SYCL graphs stay default-off: on B70 (L0 1.15) per-token graph update throws
+'different topology' and re-finalize collapses decode to 15.5 t/s.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ ggml/src/ggml-sycl/ggml-sycl.cpp | 123 ++++++++++++++++++++++++++++---
+ ggml/src/ggml-sycl/mmvq.cpp      |   5 ++
+ 2 files changed, 117 insertions(+), 11 deletions(-)
+
+diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
+index fc98fcc2b..eeb03b158 100644
+--- a/ggml/src/ggml-sycl/ggml-sycl.cpp
++++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
+@@ -3887,6 +3887,57 @@ static bool reorder_qw_q5_k_moe(uint8_t * data_device, size_t expert_bytes, int6
+     return true;
+ }
+ 
++// MoE counterpart of reorder_qw_q6_k: scatter every block of every expert into its per-expert
++// self-contained SoA ([ql][qh][scales][d]) in a single kernel. Same atomic temp-buffer contract
++// as reorder_qw_q4_k_moe (one full-tensor temp up front; untouched data on failure).
++static bool reorder_qw_q6_k_moe(uint8_t * data_device, size_t expert_bytes, int64_t n_expert, dpct::queue_ptr stream) {
++    GGML_ASSERT(expert_bytes % sizeof(block_q6_K) == 0);
++    const int    blocks_per_expert = (int) (expert_bytes / sizeof(block_q6_K));
++    const size_t total_bytes       = expert_bytes * (size_t) n_expert;
++
++    sycl_reorder_temp_buffer tmp(stream, total_bytes);
++    if (!tmp) {
++        GGML_LOG_WARN("%s: failed to allocate %zu bytes for reorder temp buffer, skipping reorder\n", __func__, total_bytes);
++        return false;
++    }
++    uint8_t * tmp_buf = static_cast<uint8_t *>(tmp.ptr);
++
++    sycl::event copy_event;
++    SYCL_CHECK(CHECK_TRY_ERROR(copy_event = stream->memcpy(tmp_buf, data_device, total_bytes)));
++    if (!g_ggml_sycl_use_async_mem_op) {
++        copy_event.wait();
++    }
++
++    const int total_blocks = blocks_per_expert * (int) n_expert;
++    auto reorder_event = stream->parallel_for(total_blocks, [=](auto gb_) {
++        const int          gb   = gb_;
++        const int          e    = gb / blocks_per_expert;
++        const int          ib   = gb % blocks_per_expert;
++        const block_q6_K * x    = (const block_q6_K *) (tmp_buf + (size_t) e * expert_bytes);
++        uint8_t *          base = data_device + (size_t) e * expert_bytes;
++
++        auto * ql_ptr     = base;
++        auto * qh_ptr     = ql_ptr + (QK_K / 2) * blocks_per_expert;
++        auto * scales_ptr = qh_ptr + (QK_K / 4) * blocks_per_expert;
++        auto * d_ptr      = (sycl::half *) (scales_ptr + (QK_K / 16) * blocks_per_expert);
++
++        for (int j = 0; j < QK_K / 2; ++j) {
++            ql_ptr[ib * (QK_K / 2) + j] = x[ib].ql[j];
++        }
++        for (int j = 0; j < QK_K / 4; ++j) {
++            qh_ptr[ib * (QK_K / 4) + j] = x[ib].qh[j];
++        }
++        for (int j = 0; j < QK_K / 16; ++j) {
++            scales_ptr[ib * (QK_K / 16) + j] = x[ib].scales[j];
++        }
++        d_ptr[ib] = x[ib].d;
++    });
++    if (!g_ggml_sycl_use_async_mem_op) {
++        reorder_event.wait_and_throw();
++    }
++    return true;
++}
++
+ static bool reorder_qw_q3_k(uint8_t * data_device, size_t size, size_t offset, dpct::queue_ptr stream) {
+     GGML_ASSERT(size % sizeof(block_q3_K) == 0);
+     GGML_ASSERT(offset % sizeof(block_q3_K) == 0);
+@@ -4051,6 +4102,8 @@ static bool reorder_qw(const ggml_tensor * src0, dpct::queue_ptr stream) {
+                 return reorder_qw_q4_k_moe(data_device, src0->nb[2], src0->ne[2], stream);
+             case GGML_TYPE_Q5_K:
+                 return reorder_qw_q5_k_moe(data_device, src0->nb[2], src0->ne[2], stream);
++            case GGML_TYPE_Q6_K:
++                return reorder_qw_q6_k_moe(data_device, src0->nb[2], src0->ne[2], stream);
+             default:
+                 return false;
+         }
+@@ -4122,7 +4175,7 @@ static void opt_for_reorder_id(ggml_backend_sycl_context * ctx, const ggml_tenso
+     if (g_ggml_sycl_disable_optimize || !ctx->opt_feature.reorder) {
+         return;
+     }
+-    if (src0->type != GGML_TYPE_Q4_K && src0->type != GGML_TYPE_Q5_K) {
++    if (src0->type != GGML_TYPE_Q4_K && src0->type != GGML_TYPE_Q5_K && src0->type != GGML_TYPE_Q6_K) {
+         return;
+     }
+     ggml_tensor_extra_gpu * extra = static_cast<ggml_tensor_extra_gpu *>(src0->extra);
+@@ -4347,6 +4400,54 @@ static bool ggml_sycl_mul_mat_id_mmvq_fused(
+         src1_row_stride, stream);
+ }
+ 
++// Graph-safety mirror of ggml_sycl_mul_mat_id_mmvq_fused: true when this MUL_MAT_ID node will
++// take the fused TG path with no host synchronization, so it can record into a SYCL graph. The
++// fallback per-expert loop host-syncs on the ids memcpy and must keep graphs disabled. The
++// one-time lazy expert reorder (temp alloc + full-tensor memcpy) must also stay out of
++// recordings: until it has run -- triggered by the first eager pass -- a reorder-eligible
++// tensor reports unsafe.
++static bool ggml_sycl_mul_mat_id_is_graph_safe(ggml_backend_sycl_context * ctx, const ggml_tensor * dst) {
++    const ggml_tensor * src0 = dst->src[0];
++    const ggml_tensor * src1 = dst->src[1];
++    const ggml_tensor * ids  = dst->src[2];
++
++    // bail checks of ggml_sycl_mul_mat_id_mmvq_fused
++    if (src1->ne[2] != 1) return false;
++    if (src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) return false;
++    if (src1->ne[0] != src0->ne[0] || src1->ne[0] % QK8_1 != 0) return false;
++    if (!ggml_is_contiguous(src1)) return false;
++    if (ids->ne[1] != 1) return false;
++    if (src1->ne[1] != 1 && src1->ne[1] != ids->ne[0]) return false;
++
++    switch (src0->type) {  // mirrors the ggml_sycl_mul_mat_vec_q_id type dispatch
++        case GGML_TYPE_Q4_0:
++        case GGML_TYPE_Q4_1:
++        case GGML_TYPE_Q5_0:
++        case GGML_TYPE_Q5_1:
++        case GGML_TYPE_Q8_0:
++        case GGML_TYPE_Q2_K:
++        case GGML_TYPE_Q3_K:
++        case GGML_TYPE_Q4_K:
++        case GGML_TYPE_Q5_K:
++        case GGML_TYPE_Q6_K:
++        case GGML_TYPE_MXFP4:
++        case GGML_TYPE_NVFP4:
++            break;
++        default:
++            return false;
++    }
++
++    // would opt_for_reorder_id still mutate this tensor? then the eager pass must run it first
++    if (!g_ggml_sycl_disable_optimize && ctx->opt_feature.reorder &&
++        (src0->type == GGML_TYPE_Q4_K || src0->type == GGML_TYPE_Q5_K || src0->type == GGML_TYPE_Q6_K)) {
++        const ggml_tensor_extra_gpu * extra = static_cast<const ggml_tensor_extra_gpu *>(src0->extra);
++        if (extra && !extra->optimized_feature.reorder) {
++            return false;
++        }
++    }
++    return true;
++}
++
+ // counting sort of the routed rows by expert id (row_id_i, as chosen by the router):
+ // builds a projection of a memory layout where each expert's slice is contiguous
+ static void mmid_counting_sort_rows(
+@@ -5116,7 +5217,7 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
+ }
+ 
+ #ifdef GGML_SYCL_GRAPH
+-static bool check_graph_compatibility(ggml_cgraph * cgraph) {
++static bool check_graph_compatibility(ggml_backend_sycl_context * sycl_ctx, ggml_cgraph * cgraph) {
+     if (ggml_sycl_info().device_count > 1) {
+         // A sycl_ex::command_graph object can only be created for a single device
+         GGML_LOG_INFO("%s: disabling SYCL graphs due to multiple devices\n", __func__);
+@@ -5128,15 +5229,15 @@ static bool check_graph_compatibility(ggml_cgraph * cgraph) {
+         switch (node_op) {
+             default:
+                 break;
+-            case GGML_OP_CONCAT:
+-                // ggml_sycl_op_concat() does a blocking host wait after memcpy operations,
+-                // but wait() can't be called on the events returned by a queue recording
+-                // to a graph.
+-                [[fallthrough]];
+             case GGML_OP_MUL_MAT_ID:
+-                // ggml_sycl_mul_mat_id() does a blocking host wait on the sycl queue after
+-                // submitting a memcpy operation, but wait() can't be called on a queue that
+-                // is recording to a graph.
++                // The fused MoE TG path keeps the routing ids on-device and never host-syncs,
++                // so it can record into a graph; its pool allocations need the async alloc
++                // extension, same as GGML_OP_MUL_MAT below. Only the fallback per-expert loop
++                // (blocking ids memcpy) and the one-time lazy expert reorder require graphs off.
++                if (g_ggml_sycl_use_async_mem_op &&
++                    ggml_sycl_mul_mat_id_is_graph_safe(sycl_ctx, cgraph->nodes[i])) {
++                    break;
++                }
+                 GGML_LOG_INFO("%s: disabling SYCL graphs due to unsupported node type %s\n", __func__,
+                               ggml_op_name(node_op));
+                 return false;
+@@ -5162,7 +5263,7 @@ static ggml_status ggml_backend_sycl_graph_compute(ggml_backend_t backend, ggml_
+     auto * sycl_ctx = static_cast<ggml_backend_sycl_context *>(backend->context);
+ 
+ #ifdef GGML_SYCL_GRAPH
+-    bool use_sycl_graph = !g_ggml_sycl_disable_graph && check_graph_compatibility(cgraph);
++    bool use_sycl_graph = !g_ggml_sycl_disable_graph && check_graph_compatibility(sycl_ctx, cgraph);
+     if (use_sycl_graph) {
+         const bool graph_support = dpct::get_device(sycl_ctx->device).has(sycl::aspect::ext_oneapi_limited_graph);
+         if (!graph_support) {
+diff --git a/ggml/src/ggml-sycl/mmvq.cpp b/ggml/src/ggml-sycl/mmvq.cpp
+index 6ad69d226..26176037f 100644
+--- a/ggml/src/ggml-sycl/mmvq.cpp
++++ b/ggml/src/ggml-sycl/mmvq.cpp
+@@ -2578,6 +2578,11 @@ bool ggml_sycl_mul_mat_vec_q_id_reorder(
+                 vx_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
+                 expert_weight_stride, dst_row_stride, src1_row_stride, stream);
+             return true;
++        case GGML_TYPE_Q6_K:
++            launch_mul_mat_vec_q_moe_reorder<reorder_vec_dot_q_sycl<GGML_TYPE_Q6_K>>(
++                vx_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
++                expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++            return true;
+         default:
+             return false;
+     }
+-- 
+2.43.0
+

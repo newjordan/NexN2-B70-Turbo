@@ -1,0 +1,18 @@
+=== greedy sanity ===
+user
+The capital of France is
+assistant
+Paris.
+
+> EOF by user
+
+
+=== depth sweep: reorder OFF then ON ===
+disable_opt=1 "n_depth": 0	"avg_ts": 68.914820
+disable_opt=1 "n_depth": 4096	"avg_ts": 65.819211
+disable_opt=1 "n_depth": 16384	"avg_ts": 62.250104
+disable_opt=1 "n_depth": 32768	"avg_ts": 56.951947
+disable_opt=0 "n_depth": 0	"avg_ts": 85.086571
+disable_opt=0 "n_depth": 4096	"avg_ts": 80.780284
+disable_opt=0 "n_depth": 16384	"avg_ts": 75.643591
+disable_opt=0 "n_depth": 32768	"avg_ts": 67.710421
