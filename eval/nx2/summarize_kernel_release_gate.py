@@ -9,8 +9,11 @@ The expected inputs are llama-bench JSON files named like:
   candidate-q4-ctx0.json
   baseline-q5-131k.json
   candidate-q5-131k.json
+  baseline-q5-ctx0-sm-tensor.json
+  candidate-q5-ctx0-sm-tensor.json
 
 Only q5 ctx0 is a promotion gate. Q4 and long-context Q5 are guardrails.
+The tensor split row is informational for multi-GPU claims and is not a gate.
 """
 
 from __future__ import annotations
@@ -232,7 +235,7 @@ def emit_markdown(
     lines.append("")
     lines.append("| case | baseline t/s | candidate t/s | delta | combined SEM | samples |")
     lines.append("|---|---:|---:|---:|---:|---:|")
-    for stem in ("q5-ctx0", "q4-ctx0", "q5-131k"):
+    for stem in ("q5-ctx0", "q4-ctx0", "q5-131k", "q5-ctx0-sm-tensor"):
         pair = pairs.get(stem)
         if pair is not None:
             lines.append(format_pair(stem, pair[0], pair[1]))
@@ -273,7 +276,7 @@ def emit_markdown(
 
 def collect_pairs(run_dir: Path) -> dict[str, tuple[Bench, Bench]]:
     pairs: dict[str, tuple[Bench, Bench]] = {}
-    for stem in ("q5-ctx0", "q4-ctx0", "q5-131k"):
+    for stem in ("q5-ctx0", "q4-ctx0", "q5-131k", "q5-ctx0-sm-tensor"):
         pair = find_pair(run_dir, stem)
         if pair is not None:
             pairs[stem] = pair

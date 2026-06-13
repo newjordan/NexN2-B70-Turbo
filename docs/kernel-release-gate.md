@@ -42,6 +42,17 @@ The runner writes JSON, logs, and `SUMMARY.md` under:
 results/nx2-kernel-release-gate/<timestamp>/
 ```
 
+To add an informational 2-device tensor-split row for multi-GPU claims:
+
+```bash
+RUN_TENSOR_SPLIT=1 TENSOR_SPLIT=1/1 eval/nx2/run_kernel_release_gate.sh
+```
+
+That emits `q5-ctx0-sm-tensor` baseline/candidate rows using
+`llama-bench -sm tensor -ts "$TENSOR_SPLIT"`. The row is reported in
+`SUMMARY.md`, but it is not part of the HF-update promotion decision because the
+single-B70 package remains the release target.
+
 To rescore an existing run:
 
 ```bash
