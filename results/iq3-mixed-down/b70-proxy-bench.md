@@ -43,3 +43,40 @@ Scope: every IQ3_A770 tensor in the model is a MoE expert (`ffn_*_exps`,
 touches dense MUL_MAT. M2 is the validated dp4a reference kernel; carrying it into
 the expert decode (reordered MUL_MAT_ID) is `0007` — that is where the model tg gap
 vs stock Q3_K_M (62 t/s) closes.
+
+## 0007 — IQ3 MoE MUL_MAT_ID reordered dp4a decode (landed) ⭐
+
+Lazily reorders each IQ3_A770 expert tensor into a per-expert SoA
+(`[qs][hmask][scales][d]`) on first decode, then runs a **single fused expert GEMV**
+(`reorder_vec_dot_q_sycl<IQ3_A770>` = the M2 LUT dp4a reading SoA planes) for all 8
+active experts per matmul — vs M2's 8 separate per-expert mmvq launches. Patch:
+[`../../patches/wip/0007-iq3-a770-sycl-moe-reorder.partial.patch`](../../patches/wip/0007-iq3-a770-sycl-moe-reorder.partial.patch)
+(7 components across 6 SYCL files).
+
+**Root-cause note:** the first 6 components compiled and the model stayed coherent, but
+instrumentation showed the reorder path was **dormant** — `ggml_backend_sycl_buffer_init_tensor`
+only allocated the reorder `ggml_tensor_extra_gpu` for `Q4_0/Q8_0/Q4_K/Q6_K`, so IQ3
+tensors had `extra==nullptr` and `opt_for_reorder_id` silently skipped them
+(`use_reorder=0` → fell back to the M2 per-expert path). Adding `GGML_TYPE_IQ3_A770`
+to that switch is the fix that actually engages 0007.
+
+Correctness (SYCL/B70): `test-backend-ops MUL_MAT_ID` **2/2 OK with reorder active**
+(`use_reorder=1` confirmed by trace — the reorder vec_dot is exercised and matches the
+CPU reference); end-to-end `llama-completion` "The capital of France is" → **"Paris."**
+
+Model throughput (`llama-bench`, NX2-IQ3_A770-mixed-LUT.gguf, -ngl 99, B70, competing
+Q5 server resident). **Back-to-back `init_tensor` on/off toggle, same build session,
+same resident server, `-r 5`** — the rigorous A/B:
+
+| config | pp512 | tg64 |
+|---|---|---|
+| reorder **OFF** — M2 per-expert mmvq | 600.65 ± 1.63 | 43.69 ± 0.03 |
+| reorder **ON** — 0007 fused reorder dp4a | 600.09 ± 0.74 | **78.56 ± 0.10** |
+
+**pp512 is identical across the toggle (600.65 vs 600.09) — the contention control** — so the
+**tg jump 43.69 → 78.56 t/s = +79.8% (1.80×) is unambiguously the 0007 algorithm, not GPU
+contention.** Error bars ±0.1 over 5 reps. **Clears stock Q3_K_M's 62 t/s.** The win is
+launch-overhead elimination: one expert-indexed GEMV per matmul for all 8 active experts,
+vs M2's 8 separate per-expert launches (×40 layers ×3 projections). pp is unchanged because
+prefill is batch-GEMM, not the decode reorder path. (M1 dequant→fp16→GEMM was pp707/tg32 in
+an earlier session — indicative, different contention.)
