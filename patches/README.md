@@ -29,7 +29,7 @@ A770-only patches start after the retained Turbo chain:
 
 ```text
 0005 GGML_TYPE_IQ3_A770 plumbing            (LANDED - CPU oracle)
-0006 IQ3 SYCL dequant + vecdot reference kernel
+0006 IQ3 SYCL dequant + vecdot reference kernel (M1 dequant + M2 dp4a mmvq - landed in wip/, B70-validated)
 0007 IQ3 MoE MUL_MAT_ID reordered decode path
 0008 exact MoE fused gate/up path
 0009 tensor policy + quant ftype (L2 asym down, dedicated LLAMA_FTYPE)

@@ -13,5 +13,33 @@ llama-server (Q5) resident on the GPU, so treat as a conservative floor.
 Correctness: test-backend-ops MUL_MAT + MUL_MAT_ID all OK on SYCL/B70 (0 fail);
 end-to-end "The capital of France is" -> "Paris." on GPU.
 
-M2 (dp4a mul_mat_vec_q, reads 3.19bpw directly, no fp16 detour) targets the tg gap
-vs stock Q3_K_M (62 t/s) -- pending.
+## M2 — dp4a `mul_mat_vec_q` reference kernel (landed)
+
+`vec_dot_iq3_a770_q8_1` reads the packed 3.19bpw block directly (LUT `kvalues_iq3nl`,
+Q3_K-style 2+1 bit unpack, 8×32 4-bit signed scales, `dp4a`) — no fp16 dequant
+detour. Bit-matches the CPU oracle `ggml_vec_dot_iq3_a770_q8_K`. Patch:
+[`../../patches/wip/0006-iq3-a770-sycl-vecdot-M2.partial.patch`](../../patches/wip/0006-iq3-a770-sycl-vecdot-M2.partial.patch).
+
+Correctness (`test-backend-ops`, SYCL/B70): MUL_MAT (dp4a) **11/11 OK**; MUL_MAT_ID
+(unchanged dequant+GEMM fallback) **2/2 OK**.
+
+Kernel A/B — `test-backend-ops perf -o MUL_MAT`, m=4096, k=14336, same build/device
+(dp4a vs the M1 dequant+fp16+GEMM path, toggled via `can_use_mul_mat_vec_q`):
+
+| n (cols) | M1 dequant+GEMM | M2 dp4a | speedup |
+|---|---|---|---|
+| **1 (GEMV / decode)** | 1576.7 µs | **682.6 µs** | **2.31×** |
+| 2 | 1559.2 µs | 1289.9 µs | 1.21× |
+| 8 | 1559.6 µs | 5448.6 µs | 0.29× |
+
+dp4a wins decisively at n=1 — the decode shape — by reading 3.19bpw instead of
+materializing the whole weight tile to fp16. Above n≈2 the simple per-column mmvq
+loses to amortized dequant+GEMM (the standard mmvq/GEMM crossover; matches stock
+`iq3_s`, which uses the same per-column launcher). A batched ncols kernel is a
+later optimization.
+
+Scope: every IQ3_A770 tensor in the model is a MoE expert (`ffn_*_exps`,
+**MUL_MAT_ID**), so the M1 model pp/tg figures above are unchanged by M2, which only
+touches dense MUL_MAT. M2 is the validated dp4a reference kernel; carrying it into
+the expert decode (reordered MUL_MAT_ID) is `0007` — that is where the model tg gap
+vs stock Q3_K_M (62 t/s) closes.
