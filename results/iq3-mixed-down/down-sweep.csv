@@ -1,0 +1,5 @@
+cell,gateup,down,nonexp,size_GiB,mean_KLD,top1_pct,ppl_ratio
+down_q3k,iq3_a770,q3_k,q6_k,14.21,0.069702,88.812,1.019443
+down_iq3s,iq3_a770,iq3_s,q6_k,14.21,0.067894,89.251,1.023387
+down_q4k,iq3_a770,q4_k,q6_k,15.54,0.056735,89.969,1.020052
+down_q4k_q5base,iq3_a770,q4_k,q5_k,15.34,0.061324,89.620,1.018797
