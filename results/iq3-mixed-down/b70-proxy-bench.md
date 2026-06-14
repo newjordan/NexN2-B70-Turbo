@@ -80,3 +80,31 @@ launch-overhead elimination: one expert-indexed GEMV per matmul for all 8 active
 vs M2's 8 separate per-expert launches (×40 layers ×3 projections). pp is unchanged because
 prefill is batch-GEMM, not the decode reorder path. (M1 dequant→fp16→GEMM was pp707/tg32 in
 an earlier session — indicative, different contention.)
+
+## 0008 — IQ3 fused gate/up + SwiGLU (landed)
+
+Fuses the gate GEMV, up GEMV, and the SwiGLU activation (`up * silu(gate)`) into a single
+kernel that reads the shared quantized activation once — vs 0007's two separate reorder
+GEMVs + a standalone GLU. Reuses the existing generic `mul_mat_vec_q_moe_swiglu_reorder`
+kernel with `reorder_vec_dot_q_sycl<IQ3_A770>` (the IQ3 `qi=8` trait fails the nx2-specialized
+kernel's `qi/vdr==WARP_SIZE` static-assert, so IQ3 takes the generic fused path). Three
+wiring changes: `should_fuse` + `is_nx2_shape` type gates + the swiglu dispatch case. Patch:
+[`../../patches/wip/0008-iq3-a770-sycl-gate-up-swiglu.partial.patch`](../../patches/wip/0008-iq3-a770-sycl-gate-up-swiglu.partial.patch).
+
+Correctness: `llama-completion` "The capital of France is" → **"Paris."** with the fused
+gate/up active.
+
+Back-to-back A/B — env toggle `GGML_SYCL_ENABLE_MOE_GATE_UP_FUSION` 0↔3, **same binary,
+`-r 5`**:
+
+| config | pp512 | tg64 |
+|---|---|---|
+| **OFF** (separate gate/up = 0007) | 598.67 ± 1.44 | 79.02 ± 0.06 |
+| **ON** (fused gate/up+SwiGLU = 0008) | 600.00 ± 1.82 | **81.99 ± 0.12** |
+
+ON≠OFF confirms the fusion **engages** (no silent dormancy — 0007's `init_tensor` fix already
+provides the `extra`). pp identical → **tg 79.02 → 81.99 = +3.8% (1.04×)**, error bars
+non-overlapping. Modest vs 0007's +80% (gate/up were already 1 launch each post-0007; this
+saves 2 launches/layer + the shared-activation re-read). **Cumulative M1→0008: tg ≈ 32 → 82
+t/s (2.56×).** A further win would need an IQ3-specific nx2-specialized swiglu kernel
+(qi=8-compatible) — deferred.
