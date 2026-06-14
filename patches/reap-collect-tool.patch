@@ -1,0 +1,320 @@
+From e10ee49fd17cee091700dff3352e624359ce25eb Mon Sep 17 00:00:00 2001
+From: newjordan <newjordan@gmail.com>
+Date: Sat, 13 Jun 2026 19:15:56 -0500
+Subject: [PATCH] tools: add reap-collect (router-weighted expert saliency
+ collector)
+
+cb_eval taps ffn_moe_down (expert ids) + ffn_moe_weighted (g*||f|| norm) per layer; emits per-(layer,expert) saliency GGUF for REAP scoring. Used for the REAP prune experiment (dropped; see docs/reap-results.md).
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ tools/CMakeLists.txt        |   1 +
+ tools/reap/CMakeLists.txt   |   8 ++
+ tools/reap/reap-collect.cpp | 268 ++++++++++++++++++++++++++++++++++++
+ 3 files changed, 277 insertions(+)
+ create mode 100644 tools/reap/CMakeLists.txt
+ create mode 100644 tools/reap/reap-collect.cpp
+
+diff --git a/tools/CMakeLists.txt b/tools/CMakeLists.txt
+index 780df3266..18b7031bf 100644
+--- a/tools/CMakeLists.txt
++++ b/tools/CMakeLists.txt
+@@ -17,6 +17,7 @@ else()
+     add_subdirectory(batched-bench)
+     add_subdirectory(gguf-split)
+     add_subdirectory(imatrix)
++    add_subdirectory(reap)
+     add_subdirectory(llama-bench)
+     add_subdirectory(completion)
+     add_subdirectory(perplexity)
+diff --git a/tools/reap/CMakeLists.txt b/tools/reap/CMakeLists.txt
+new file mode 100644
+index 000000000..3e2e39d57
+--- /dev/null
++++ b/tools/reap/CMakeLists.txt
+@@ -0,0 +1,8 @@
++set(TARGET llama-reap-collect)
++add_executable(${TARGET} reap-collect.cpp)
++target_link_libraries(${TARGET} PRIVATE llama-common llama ${CMAKE_THREAD_LIBS_INIT})
++target_compile_features(${TARGET} PRIVATE cxx_std_17)
++
++if(LLAMA_TOOLS_INSTALL)
++    install(TARGETS ${TARGET} RUNTIME)
++endif()
+diff --git a/tools/reap/reap-collect.cpp b/tools/reap/reap-collect.cpp
+new file mode 100644
+index 000000000..ef6760986
+--- /dev/null
++++ b/tools/reap/reap-collect.cpp
+@@ -0,0 +1,268 @@
++// REAP saliency collector — Router-weighted Expert Activation Pruning.
++//
++// For each MoE layer/expert, accumulates  S_j = sum over routed tokens of g_j * ||f_j(x)||_2
++// and a count (router-hit frequency). The scorer turns these into per-expert mean saliency
++// and a router-frequency histogram (reused for dynamic residency).
++//
++// Method (qwen35moe / Nex-N2-mini): two taps per layer via the eval callback.
++//   - at node "ffn_moe_down-{il}"     (GGML_OP_MUL_MAT_ID): cache the selected expert ids (src[2]).
++//   - at node "ffn_moe_weighted-{il}" (g_j * f_j, [n_embd, n_used, n_tok]): the L2 norm over n_embd
++//       of column (slot,tok) equals g_j * ||f_j||_2 (g_j >= 0); attribute to the cached id.
++// Output: a GGUF with per-layer reap.s_sum.blk.{il} and reap.count.blk.{il} (F32 [n_expert]).
++
++#include "arg.h"
++#include "common.h"
++#include "log.h"
++#include "llama.h"
++#include "ggml.h"
++#include "gguf.h"
++
++#include <cmath>
++#include <cstring>
++#include <cstdint>
++#include <cctype>
++#include <mutex>
++#include <string>
++#include <vector>
++
++static std::string filter_tensor_name(const char * name) {
++    // strip backend wrapper "BACKEND#name#split" -> "name"
++    std::string wname;
++    const char * p = strchr(name, '#');
++    if (p != NULL) {
++        p = p + 1;
++        const char * q = strchr(p, '#');
++        wname = q != NULL ? std::string(p, q - p) : std::string(p);
++    } else {
++        wname = name;
++    }
++    return wname;
++}
++
++// split "ffn_moe_down-31" -> base="ffn_moe_down", il=31
++static bool parse_node(const std::string & wname, std::string & base, int & il) {
++    const size_t pos = wname.rfind('-');
++    if (pos == std::string::npos || pos + 1 >= wname.size()) return false;
++    const std::string ils = wname.substr(pos + 1);
++    for (char c : ils) if (!std::isdigit((unsigned char) c)) return false;
++    base = wname.substr(0, pos);
++    il   = std::stoi(ils);
++    return true;
++}
++
++static inline float read_f32(const char * p, ggml_type type) {
++    if (type == GGML_TYPE_F32) return *(const float *) p;
++    if (type == GGML_TYPE_F16) return ggml_fp16_to_fp32(*(const ggml_fp16_t *) p);
++    return 0.0f;
++}
++
++struct CachedIds {
++    std::vector<char> buf;
++    int64_t n_used = 0, n_tok = 0;
++    size_t  nb0 = 0, nb1 = 0;
++    bool    valid = false;
++};
++
++struct ReapCollector {
++    std::mutex mtx;
++    int n_layer = 0, n_expert = 0, n_expert_used = 0;
++    std::vector<std::vector<double>>  s_sum;   // [layer][expert]
++    std::vector<std::vector<int64_t>> counts;  // [layer][expert]
++    std::vector<CachedIds>            ids;      // [layer]
++    int64_t total_tokens = 0;
++    std::vector<char> scratch;
++
++    void ensure_layer(int il, int n_exp) {
++        if ((int) s_sum.size() <= il) { s_sum.resize(il + 1); counts.resize(il + 1); ids.resize(il + 1); }
++        if (s_sum[il].empty()) { s_sum[il].assign(n_exp, 0.0); counts[il].assign(n_exp, 0); }
++        if (il + 1 > n_layer) n_layer = il + 1;
++        n_expert = n_exp;
++    }
++
++    const char * to_host(const ggml_tensor * t, std::vector<char> & tmp) {
++        if (ggml_backend_buffer_is_host(t->buffer)) return (const char *) t->data;
++        const size_t nb = ggml_nbytes(t);
++        tmp.resize(nb);
++        ggml_backend_tensor_get(t, tmp.data(), 0, nb);
++        return tmp.data();
++    }
++
++    bool cb(ggml_tensor * t, bool ask) {
++        std::string base; int il;
++        if (!parse_node(filter_tensor_name(t->name), base, il)) return false;
++        const bool is_down     = base == "ffn_moe_down";
++        const bool is_weighted = base == "ffn_moe_weighted";
++        if (ask) return is_down || is_weighted;
++        if (!is_down && !is_weighted) return false;
++
++        std::lock_guard<std::mutex> lock(mtx);
++
++        if (is_down && t->op == GGML_OP_MUL_MAT_ID) {
++            const ggml_tensor * idt = t->src[2];
++            const int64_t n_exp = t->src[0]->ne[2];
++            ensure_layer(il, (int) n_exp);
++            n_expert_used = (int) idt->ne[0];
++            CachedIds & c = ids[il];
++            std::vector<char> tmp;
++            const char * idata = to_host(idt, tmp);
++            c.buf.assign(idata, idata + ggml_nbytes(idt));
++            c.n_used = idt->ne[0];
++            c.n_tok  = idt->ne[1];
++            c.nb0    = idt->nb[0];
++            c.nb1    = idt->nb[1];
++            c.valid  = true;
++            return true;
++        }
++
++        if (is_weighted) {
++            if (il >= (int) ids.size() || !ids[il].valid) return true; // no ids yet (shouldn't happen)
++            CachedIds & c = ids[il];
++            const int64_t n_embd = t->ne[0];
++            const int64_t n_used = t->ne[1];
++            const int64_t n_tok  = t->ne[2];
++            if (n_used != c.n_used || n_tok != c.n_tok) { c.valid = false; return true; }
++            const char * data = to_host(t, scratch);
++            for (int64_t tok = 0; tok < n_tok; ++tok) {
++                for (int64_t slot = 0; slot < n_used; ++slot) {
++                    const int32_t e = *(const int32_t *) (c.buf.data() + tok * c.nb1 + slot * c.nb0);
++                    if (e < 0 || e >= n_expert) continue;
++                    const char * col = data + slot * t->nb[1] + tok * t->nb[2];
++                    double s = 0.0;
++                    for (int64_t d = 0; d < n_embd; ++d) {
++                        const float v = read_f32(col + d * t->nb[0], t->type);
++                        s += (double) v * (double) v;
++                    }
++                    s_sum[il][e]  += std::sqrt(s);
++                    counts[il][e] += 1;
++                }
++            }
++            c.valid = false;
++            return true;
++        }
++        return false;
++    }
++
++    void save(const std::string & fname, const std::string & dataset, const std::string & source) const {
++        size_t mem = 0;
++        for (int il = 0; il < n_layer; ++il) {
++            mem += 2 * (ggml_tensor_overhead() + GGML_PAD(sizeof(float) * n_expert, GGML_MEM_ALIGN));
++        }
++        struct ggml_init_params ip = { mem + ggml_tensor_overhead() * 8, NULL, false };
++        struct ggml_context * ctx = ggml_init(ip);
++        struct gguf_context * g = gguf_init_empty();
++
++        gguf_set_val_str(g, "general.type", "reap");
++        gguf_set_val_str(g, "reap.metric", "g_times_out_l2_mean");
++        gguf_set_val_u32(g, "reap.n_layer", (uint32_t) n_layer);
++        gguf_set_val_u32(g, "reap.n_expert", (uint32_t) n_expert);
++        gguf_set_val_u32(g, "reap.n_expert_used", (uint32_t) n_expert_used);
++        gguf_set_val_u32(g, "reap.n_tokens", (uint32_t) total_tokens);
++        gguf_set_val_str(g, "reap.dataset", dataset.c_str());
++        gguf_set_val_str(g, "reap.source_model", source.c_str());
++
++        for (int il = 0; il < n_layer; ++il) {
++            ggml_tensor * ts = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_expert);
++            ggml_tensor * tc = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_expert);
++            ggml_format_name(ts, "reap.s_sum.blk.%d", il);
++            ggml_format_name(tc, "reap.count.blk.%d", il);
++            for (int e = 0; e < n_expert; ++e) {
++                ((float *) ts->data)[e] = il < (int) s_sum.size()  ? (float) s_sum[il][e]  : 0.0f;
++                ((float *) tc->data)[e] = il < (int) counts.size() ? (float) counts[il][e] : 0.0f;
++            }
++            gguf_add_tensor(g, ts);
++            gguf_add_tensor(g, tc);
++        }
++        gguf_write_to_file(g, fname.c_str(), false);
++        gguf_free(g);
++        ggml_free(ctx);
++    }
++};
++
++static ReapCollector g_collector;
++static bool reap_cb(ggml_tensor * t, bool ask, void * /*user_data*/) {
++    return g_collector.cb(t, ask);
++}
++
++static bool run_corpus(llama_context * ctx, const common_params & params) {
++    const llama_model * model = llama_get_model(ctx);
++    const llama_vocab * vocab = llama_model_get_vocab(model);
++    const bool add_bos = llama_vocab_get_add_bos(vocab);
++
++    std::vector<llama_token> tokens = common_tokenize(ctx, params.prompt, true, params.parse_special);
++    const int n_ctx = (int) llama_n_ctx(ctx);
++    if ((int) tokens.size() < n_ctx) {
++        LOG_ERR("%s: corpus has %zu tokens, need >= n_ctx=%d\n", __func__, tokens.size(), n_ctx);
++        return false;
++    }
++    const int n_chunk_max = (int) tokens.size() / n_ctx;
++    const int n_chunk = params.n_chunks < 0 ? n_chunk_max : std::min(params.n_chunks, n_chunk_max);
++    const int n_batch = params.n_batch;
++    const int num_batches = (n_ctx + n_batch - 1) / n_batch;
++
++    LOG_INF("%s: %d chunks, n_ctx=%d, n_batch=%d\n", __func__, n_chunk, n_ctx, n_batch);
++    llama_batch batch = llama_batch_init(std::min(n_batch, n_ctx), 0, 1);
++
++    for (int i = 0; i < n_chunk; ++i) {
++        const int start = i * n_ctx;
++        llama_memory_clear(llama_get_memory(ctx), true);
++        for (int j = 0; j < num_batches; ++j) {
++            const int batch_start = start + j * n_batch;
++            const int batch_size  = std::min(n_ctx - j * n_batch, n_batch);
++            common_batch_clear(batch);
++            const llama_token tok_org = tokens[batch_start];
++            if (add_bos && j == 0) tokens[batch_start] = llama_vocab_bos(vocab);
++            for (int k = 0; k < batch_size; ++k) {
++                common_batch_add(batch, tokens[batch_start + k], j * n_batch + k, { 0 }, k == batch_size - 1);
++            }
++            tokens[batch_start] = tok_org;
++            if (llama_decode(ctx, batch)) {
++                LOG_ERR("%s: decode failed at chunk %d batch %d\n", __func__, i, j);
++                llama_batch_free(batch);
++                return false;
++            }
++        }
++        g_collector.total_tokens += n_ctx;
++        if ((i + 1) % 5 == 0 || i + 1 == n_chunk) {
++            LOG_INF("%s: chunk %d/%d  (layer0 nonzero experts: %d)\n", __func__, i + 1, n_chunk,
++                    [](){ int n = 0; if (!g_collector.counts.empty()) for (auto c : g_collector.counts[0]) if (c) n++; return n; }());
++        }
++    }
++    llama_batch_free(batch);
++    return true;
++}
++
++int main(int argc, char ** argv) {
++    common_params params;
++    params.n_ctx = 512;
++    if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_IMATRIX)) {
++        return 1;
++    }
++    common_init();
++    llama_backend_init();
++    llama_numa_init(params.numa);
++
++    params.cb_eval = reap_cb;
++    params.cb_eval_user_data = nullptr;
++    params.warmup = false;
++
++    auto llama_init = common_init_from_params(params);
++    auto * model = llama_init->model();
++    auto * ctx   = llama_init->context();
++    if (model == nullptr || ctx == nullptr) {
++        LOG_ERR("%s: failed to init model/context\n", __func__);
++        return 1;
++    }
++
++    if (!run_corpus(ctx, params)) {
++        return 1;
++    }
++
++    const std::string out = params.out_file.empty() ? std::string("reap.gguf") : params.out_file;
++    g_collector.save(out, params.prompt_file, params.model.path);
++    LOG_INF("reap: saved %d layers x %d experts (used=%d, %lld tokens) -> %s\n",
++            g_collector.n_layer, g_collector.n_expert, g_collector.n_expert_used,
++            (long long) g_collector.total_tokens, out.c_str());
++
++    llama_backend_free();
++    return 0;
++}
+-- 
+2.43.0
+
