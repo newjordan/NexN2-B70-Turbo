@@ -32,7 +32,8 @@ A770-only patches start after the retained Turbo chain:
 0006 IQ3 SYCL dequant + vecdot reference kernel (M1 dequant + M2 dp4a mmvq - landed in wip/, B70-validated)
 0007 IQ3 MoE MUL_MAT_ID reordered decode path  (LANDED in wip/ - tg 43.6->78.7 t/s, beats stock Q3_K_M 62; needs init_tensor extra fix)
 0008 exact MoE fused gate/up path  (LANDED in wip/ - fused gate/up+SwiGLU, tg 79.0->82.0 t/s +3.8%; branch a770-iq3-swiglu)
-0009 tensor policy + quant ftype (L2 asym down, dedicated LLAMA_FTYPE)
+0009 tensor policy + quant ftype  (dedicated LLAMA_FTYPE_MOSTLY_IQ3_A770 + Policy C LANDED in wip/; L2 asym-down deferred)
+     -> usage: llama-quantize --imatrix NX2.imatrix NX2-bf16.gguf out.gguf iq3_a770   (experts->IQ3_A770, rest->Q6_K)
 ```
 
 **`0005` (landed):** `block_iq3_a770` — a codebook-free 3-bit quant using Q3_K's
