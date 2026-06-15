@@ -1,0 +1,118 @@
+diff --git a/common/chat-auto-parser-generator.cpp b/common/chat-auto-parser-generator.cpp
+index db3a6cc6f..3e76b88d1 100644
+--- a/common/chat-auto-parser-generator.cpp
++++ b/common/chat-auto-parser-generator.cpp
+@@ -120,6 +120,10 @@ common_peg_arena autoparser::build_parser(const generation_params & inputs, cons
+         ctx.extracting_reasoning = extract_reasoning && reasoning.mode != reasoning_mode::NONE;
+         ctx.content              = &content;
+         ctx.reasoning            = &reasoning;
++        // Forced-open: the generation prompt ends with the (whitespace-trimmed) reasoning start tag, so
++        // the prefix consumes it and the model's output begins already inside the reasoning block.
++        ctx.reasoning_forced_open = !reasoning.start.empty() &&
++            string_ends_with(generation_prompt, trim_whitespace(reasoning.start));
+ 
+         // Build reasoning parser
+         ctx.reasoning_parser = reasoning.build_parser(ctx);
+@@ -157,6 +161,17 @@ common_peg_parser analyze_reasoning::build_parser(parser_build_context & ctx) co
+     if (mode == reasoning_mode::TAG_BASED || mode == reasoning_mode::TOOLS_ONLY) {
+         if (!end.empty()) {
+             if (!start.empty()) {
++                if (ctx.reasoning_forced_open) {
++                    // Forced-open: the prefix already consumed the prefilled start tag, so the output
++                    // begins inside the reasoning block with NO leading <think> to anchor on. Match the
++                    // opening tag and the reasoning body *independently*: consume a (rare) re-emitted
++                    // start tag if present, then capture leading text up to the end tag as reasoning.
++                    // Without this, a forced-open template leaks its whole reasoning trace into content
++                    // (and a stray prefilled <think> leaks into content when there's no reasoning at all,
++                    // e.g. a pure tool call).
++                    return p.optional(p.optspace(start)) +
++                           p.optional(p.reasoning(p.until(trim_whitespace(end))) + p.optspace(end));
++                }
+                 // Standard tag-based: optional(<think>reasoning</think>)
+                 return p.optional(p.optspace(start) + p.reasoning(p.until(trim_whitespace(end))) + p.optspace(end));
+             }
+diff --git a/common/chat-auto-parser.h b/common/chat-auto-parser.h
+index 7858f6572..ec4ed9fb8 100644
+--- a/common/chat-auto-parser.h
++++ b/common/chat-auto-parser.h
+@@ -225,6 +225,9 @@ struct parser_build_context {
+     const generation_params &         inputs;
+     common_peg_parser                 reasoning_parser;
+     bool                              extracting_reasoning = false;
++    // True when the template's generation prompt prefills the reasoning start tag (e.g. ends with
++    // "<think>"), so the model's output begins already inside the reasoning block.
++    bool                              reasoning_forced_open = false;
+     const analyze_reasoning *         reasoning            = nullptr;
+     const analyze_content *           content              = nullptr;
+ 
+diff --git a/models/templates/forced-open-bare-think.jinja b/models/templates/forced-open-bare-think.jinja
+new file mode 100644
+index 000000000..cf719efad
+--- /dev/null
++++ b/models/templates/forced-open-bare-think.jinja
+@@ -0,0 +1,26 @@
++{%- if messages[0].role == 'system' %}
++{{- '<|im_start|>system\n' + messages[0].content + '<|im_end|>\n' }}
++{%- endif %}
++{%- for message in messages %}
++{%- if message.role == "user" %}
++{{- '<|im_start|>user\n' + message.content + '<|im_end|>\n' }}
++{%- elif message.role == "assistant" %}
++{%- set reasoning_content = '' %}
++{%- if message.reasoning_content is string %}
++{%- set reasoning_content = message.reasoning_content %}
++{%- endif %}
++{%- if reasoning_content %}
++{{- '<|im_start|>assistant\n<think>\n' + reasoning_content + '\n</think>\n\n' + message.content + '<|im_end|>\n' }}
++{%- else %}
++{{- '<|im_start|>assistant\n' + message.content + '<|im_end|>\n' }}
++{%- endif %}
++{%- endif %}
++{%- endfor %}
++{%- if add_generation_prompt %}
++{{- '<|im_start|>assistant\n' }}
++{%- if enable_thinking is defined and enable_thinking is false %}
++{{- '<think>\n\n</think>\n\n' }}
++{%- else %}
++{{- '<think>' }}
++{%- endif %}
++{%- endif %}
+diff --git a/tests/test-chat.cpp b/tests/test-chat.cpp
+index c1be9eb5a..352d11e69 100644
+--- a/tests/test-chat.cpp
++++ b/tests/test-chat.cpp
+@@ -1935,6 +1935,34 @@ static void test_template_output_peg_parsers(bool detailed_debug) {
+         }
+     })";
+ 
++    {
++        // Regression: forced-open reasoning leak. This template's generation prompt prefills a *bare*
++        // "<think>" (no trailing newline) while prior turns render "<think>\n...\n</think>". The reasoning
++        // start tag learned from prior turns is therefore "<think>\n", which does not match the bare
++        // prefilled tag, so the prefix swallows the tag and a naive parser leaks the whole reasoning trace
++        // into content (and leaks a stray "<think>" into content when there is no reasoning at all). The
++        // forced_open path in analyze_reasoning::build_parser handles this. The Qwen3.5-4B block below uses
++        // "<think>\n" in its generation prompt and does NOT exercise this case.
++        auto tst = peg_tester("models/templates/forced-open-bare-think.jinja", detailed_debug);
++
++        // Reasoning present: model emits only the closing </think>; reasoning must be split out of content.
++        tst.test("I'm\nthinking\n</think>\n\nHello, world!\nWhat's up?")
++            .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
++            .enable_thinking(true)
++            .expect(message_assist_thoughts)
++            .run();
++
++        // Content-only (no </think>): the block is still open, so everything is in-progress reasoning and
++        // content is empty — identical to how the canonical Qwen3.5-4B (<think>\n) template parses this.
++        // (The point of the regression guard: the prefilled <think> must NOT leak into content as a literal
++        // tag, which is the bug this whole block exists for.)
++        tst.test("Hello, world!\nWhat's up?")
++            .reasoning_format(COMMON_REASONING_FORMAT_AUTO)
++            .enable_thinking(true)
++            .expect(simple_assist_msg(/* content */ "", /* reasoning */ "Hello, world!\nWhat's up?"))
++            .run();
++    }
++
+     {
+         // Qwen3.5 (basically same as Nemotron, but keeping separate tests just in case)
+         auto tst = peg_tester("models/templates/Qwen3.5-4B.jinja", detailed_debug);

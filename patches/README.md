@@ -254,3 +254,35 @@ Build: oneAPI icpx 2026.0, SYCL backend, Intel Arc Pro B70 (Battlemage). WARP_SI
 cmake -B build -DGGML_SYCL=ON -DGGML_SYCL_F16=ON -DCMAKE_CXX_COMPILER=icpx
 cmake --build build -j
 ```
+
+## chat-forced-open-reasoning-leak.patch  (chat parser; backend-agnostic)
+
+Fixes a PEG chat-parser bug where the model's `<think>` reasoning trace leaks
+into `message.content` instead of `message.reasoning_content` — i.e. the UI
+shows the thinking inline in the answer (reported from a tester run of the
+Nex-N2-mini Q4_K_M / Q5_K_M GGUFs). Independent of the SYCL/IQ3 work; touches
+only `common/chat-auto-parser-generator.cpp`, `common/chat-auto-parser.h`, and
+the test + a fixture, so it applies onto the bare base on its own.
+
+**Root cause.** Nex-N2-mini's chat template force-opens thinking with a *bare*
+`<think>` in its generation prompt, while prior assistant turns render
+`<think>\n…\n</think>`. The auto-parser learns `reasoning.start = "<think>\n"`
+from the prior-turn rendering, so the forced-open split
+(`prefix(generation_prompt, reasoning.start)`) can't find `"<think>\n"` in a
+prompt that ends with bare `"<think>"`; it swallows the tag, and the reasoning
+rule — which requires an opening `<think>` — then matches nothing, dumping the
+whole trace into content. (Canonical Qwen3.5-4B uses `<think>\n` in its
+generation prompt and is unaffected, which is why this slipped through.)
+
+**Fix.** Detect the forced-open case (generation prompt ends with the trimmed
+reasoning start tag) and, only then, match the opening tag and the reasoning
+body *independently* so leading output is captured as reasoning with no literal
+`<think>` to anchor on — and a stray prefilled `<think>` can't leak into content
+when there's no reasoning at all (e.g. a pure tool call). Normal templates are
+byte-for-byte unchanged. Validated against `test-chat`, `test-chat-auto-parser`,
+`test-chat-peg-parser` (all pass) plus a new forced-open-bare-`<think>`
+regression case in `test-chat.cpp` (fails without the fix). Rolled into
+`release/turbo-phase-twin/build/llama.cpp-turbo-phase-twin.patch`.
+
+Upstream-worthy: the bug is in upstream's generic PEG auto-parser, not in any
+NX2/A770 code.
