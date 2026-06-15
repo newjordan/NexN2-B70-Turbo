@@ -19,7 +19,7 @@ tags:
 ---
 
 <p align="center">
-  <img src="https://i.imgur.com/7i466U0.jpeg" alt="NexN2 B70 Turbo" width="440">
+  <img src="https://huggingface.co/Frosty40/Nex-N2-mini-B70-Turbo-GGUF/resolve/main/cover.jpg" alt="NexN2 B70 Turbo" width="440">
 </p>
 
 # NexN2 B70 Turbo — Nex-N2-mini GGUF
