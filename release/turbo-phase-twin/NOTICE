@@ -1,27 +1,102 @@
-Nex-N2-mini — Turbo Phase Twin
-GGUF quantizations of nex-agi/Nex-N2-mini for Intel Arc (SYCL).
+Nex-N2-mini — Turbo Phase Twin — NOTICE & Attributions
+======================================================
 
-This work is licensed under the Apache License, Version 2.0 (the "License").
-You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+Turbo Phase Twin packages, quantizes, optimizes, and serves the Nex-N2-mini
+language model on Intel Arc (A770 / Arc Pro B70, SYCL). It is an UNOFFICIAL,
+community project and is NOT affiliated with, endorsed by, or sponsored by
+Nex-AGI, the Qwen Team or Alibaba, Intel Corporation, the llama.cpp / ggml
+project, or any other party named below.
 
-Attribution chain (Apache-2.0 §4(b)):
+----------------------------------------------------------------------
+Model lineage and licenses (Apache License 2.0 throughout)
+----------------------------------------------------------------------
 
-  - Base model: Nex-N2-mini  © Nex-AGI  (Apache-2.0)
-        https://huggingface.co/nex-agi/Nex-N2-mini
-  - Post-trained on: Qwen3.5-35B-A3B-Base  © Qwen Team / Alibaba Cloud  (Apache-2.0)
-        https://huggingface.co/Qwen/Qwen3.5-35B-A3B-Base
-  - These files are quantizations of the above (GGUF + importance matrix; codebook-free
-    IQ3_A770 and Q4_K experts packed as a dual-variant "twin" GGUF; Q6_K non-experts).
-    No other modifications to the weights.
+1. Qwen3.5-35B-A3B-Base — foundation model
+   Copyright (c) Qwen Team, Alibaba Cloud.
+   Licensed under the Apache License, Version 2.0.
+   https://huggingface.co/Qwen/Qwen3.5-35B-A3B-Base
+   Nex-N2-mini is post-trained on this base model.
 
-Tooling:
-  - llama.cpp  © 2023-2026 The ggml authors  (MIT License)
-        https://github.com/ggml-org/llama.cpp
-    The included patch (build/llama.cpp-turbo-phase-twin.patch) is a derivative of llama.cpp
-    and is likewise offered under the MIT License.
+2. Nex-N2-mini — base model for these quants
+   Copyright (c) Nex-AGI.
+   Licensed under the Apache License, Version 2.0.
+   https://huggingface.co/nex-agi/Nex-N2-mini  |  https://nex-agi.com
+   Post-trained on Qwen3.5-35B-A3B-Base. Includes the vision projector
+   (mmproj-f16.gguf) redistributed here.
 
-Independent community quantization. The names identify the upstream work and do not imply
-endorsement by Nex-AGI, the Qwen Team, or the ggml authors.
+3. Nex-N2-mini — Turbo Phase Twin — quantized derivative (this project's weights)
+   Derivative work of Nex-N2-mini, redistributed under the Apache License,
+   Version 2.0 (attribution above preserved per Section 4(c/d)).
+   Changes made to the original work (per Apache-2.0 Section 4(b)):
+     - Converted from the original safetensors to the GGUF format.
+     - MoE expert tensors quantized two ways and packed into one dual-variant
+       ("twin") GGUF: a codebook-free 3-bit type (IQ3_A770, ~3.19 bpw) and Q4_K
+       (~4.5 bpw); non-expert tensors quantized to Q6_K. Both quant sets use a
+       llama.cpp importance matrix (imatrix).
+     - The GGUF metadata `qwen35moe.block_count` and
+       `qwen35moe.nextn_predict_layers` were set to 40 and 0 respectively so the
+       model loads in llama.cpp. The MTP/NextN head is speculative-only and is
+       absent from the published checkpoint; this is lossless for standard
+       inference.
+   The model weights are not otherwise altered beyond quantization.
 
-Full methodology and reproducible benchmarks:
-  https://github.com/newjordan/NexN2-B70-Turbo
+----------------------------------------------------------------------
+Software, tooling, and data
+----------------------------------------------------------------------
+
+4. llama.cpp / ggml
+   Copyright (c) 2023-2026 The ggml authors and the llama.cpp contributors.
+   Licensed under the MIT License.  https://github.com/ggml-org/llama.cpp
+   The included build patch (build/llama.cpp-turbo-phase-twin.patch) is a
+   derivative work of llama.cpp's SYCL backend, type system, and model loader:
+     - SYCL reordered MoE mul_mat_id decode + fused gate/up SwiGLU,
+     - the GGML_TYPE_IQ3_A770 codebook-free 3-bit quant type (CPU + SYCL),
+     - the multi-precision "tensor variant" model loader (the --sm twin swap).
+   The original MIT copyright and permission notices are retained in the
+   modified source files. Modifications by this project are likewise licensed
+   under the MIT License (see LICENSE).
+
+5. k-quants (Q-K block formats) by Iwan Kawrakow (ikawrakow) and the ggml
+   authors, part of llama.cpp under the MIT License. IQ3_A770 reuses Q3_K's
+   superblock bit-packing (2 low bits in `qs`, 1 high bit in `hmask`, 8×32
+   sub-blocks with 4-bit scales); Q6_K is used for non-expert tensors.
+
+6. Non-uniform code points. The IQ3_A770 8-entry value table is a NormalFloat-
+   style (non-uniform, zero-centered) codebook, an approach popularized by
+   QLoRA / NF4 (Dettmers et al., 2023, "QLoRA: Efficient Finetuning of
+   Quantized LLMs"). The specific table and the codebook-free packing are this
+   project's own; the design influence is acknowledged here.
+
+7. Importance-matrix calibration: "calibration_datav3" by Bartowski, used to
+   compute the imatrix that guides quantization. The imatrix is aggregate
+   per-tensor statistics derived from the calibration text, not the text itself.
+
+8. Evaluation: WikiText-2 (Merity et al., 2016; CC BY-SA 3.0) was used only to
+   compute perplexity and KL-divergence. It is not redistributed in this project.
+
+----------------------------------------------------------------------
+Trademarks
+----------------------------------------------------------------------
+"Nex-AGI" and "Nex-N2" are trademarks of Nex-AGI. "Qwen" is a trademark of
+Alibaba. "Intel", "Arc", and "Battlemage" are trademarks of Intel Corporation.
+All other trademarks are the property of their respective owners. These names
+are used nominatively, to identify the upstream model and the target hardware;
+no affiliation or endorsement is implied.
+
+----------------------------------------------------------------------
+Citation
+----------------------------------------------------------------------
+@misc{qwen3.5,
+    title  = {{Qwen3.5}: Towards Native Multimodal Agents},
+    author = {{Qwen Team}},
+    month  = {February},
+    year   = {2026},
+    url    = {https://qwen.ai/blog?id=qwen3.5}
+}
+
+Please also credit Nex-AGI's Nex-N2-mini (https://github.com/nex-agi/Nex-N2) as
+the base model these quantizations are built from.
+
+This project's own original code and documentation (the patch, launcher, and
+build scripts) are licensed under the MIT License. Full methodology and
+reproducible benchmarks: https://github.com/newjordan/NexN2-B70-Turbo

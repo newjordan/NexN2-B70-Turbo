@@ -171,18 +171,37 @@ single-precision GGUFs.
 - **Base model:** [nex-agi/Nex-N2-mini](https://huggingface.co/nex-agi/Nex-N2-mini)
   (Apache-2.0), post-trained on
   [Qwen/Qwen3.5-35B-A3B-Base](https://huggingface.co/Qwen/Qwen3.5-35B-A3B-Base) (Apache-2.0).
-- **Changes:** converted to GGUF; experts quantized with a llama.cpp importance matrix to a
-  codebook-free 3-bit type (`IQ3_A770`) and to `Q4_K`, packed as a dual-variant ("twin")
-  GGUF; non-expert tensors at `Q6_K`. GGUF metadata `qwen35moe.block_count=40` and
+- **Changes:** converted to GGUF; experts quantized two ways — a codebook-free 3-bit type
+  (`IQ3_A770`) and `Q4_K` — and packed as a dual-variant ("twin") GGUF; non-expert tensors at
+  `Q6_K`. Both quant sets use a llama.cpp importance matrix (imatrix) computed from Bartowski's
+  `calibration_datav3`. GGUF metadata `qwen35moe.block_count=40` and
   `qwen35moe.nextn_predict_layers=0` set so the model loads in llama.cpp (the MTP/NextN head
   is speculative-only and absent from the checkpoint — lossless for standard inference).
 - The weights are quantizations of the original; no other modifications.
 
+## Credits & dependencies
+
+This release stands on others' work. Full text in [`NOTICE`](NOTICE); in brief:
+
+- **[Qwen3.5-35B-A3B-Base](https://huggingface.co/Qwen/Qwen3.5-35B-A3B-Base)** © Qwen Team /
+  Alibaba (Apache-2.0) — the foundation model.
+- **[Nex-N2-mini](https://huggingface.co/nex-agi/Nex-N2-mini)** © Nex-AGI (Apache-2.0) — the
+  base model (and the vision projector) these quants are built from.
+- **[llama.cpp / ggml](https://github.com/ggml-org/llama.cpp)** © the ggml authors (MIT) — the
+  inference engine, quant framework, and SYCL backend. The included build patch is a
+  derivative work of it (kept under MIT).
+- **k-quants** by Iwan Kawrakow (ikawrakow) & the ggml authors (in llama.cpp, MIT) —
+  `IQ3_A770` reuses Q3_K's superblock bit-packing; `Q6_K` covers non-expert tensors.
+- **NormalFloat / NF4** (Dettmers et al., *QLoRA*, 2023) — design influence for the
+  non-uniform, zero-centered code points; the table & codebook-free packing are this project's.
+- **`calibration_datav3`** by Bartowski — the imatrix calibration text.
+- **WikiText-2** (Merity et al., 2016; CC BY-SA 3.0) — used only to measure PPL/KLD.
+
 ## License & attribution
 
-Released under the **Apache License 2.0**, inherited from the base model. Retain the
-attribution above. See [`NOTICE`](NOTICE) for the full chain (Qwen → Nex-AGI → these quants;
-plus llama.cpp / MIT).
+Released under the **Apache License 2.0**, inherited from the base model; this project's own
+code (patch, launcher, build scripts) is MIT. Retain the attribution above. See
+[`NOTICE`](NOTICE) for the complete chain.
 
 ```bibtex
 @misc{qwen3.5,
