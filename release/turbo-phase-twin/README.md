@@ -20,7 +20,7 @@ tags:
 ---
 
 <p align="center">
-  <img src="https://i.imgur.com/iR8TIa8.jpeg" alt="Nex-N2-mini — Turbo Phase Twin" width="440">
+  <img src="https://huggingface.co/Frosty40/Nex-N2-mini-Turbo-Phase-Twin/resolve/main/cover.jpg" alt="Nex-N2-mini — Turbo Phase Twin" width="440">
 </p>
 
 # Nex-N2-mini — Turbo Phase Twin
