@@ -18,8 +18,20 @@ import argparse, os, sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "llama.cpp", "gguf-py"))
 sys.path.insert(0, os.path.join(os.environ.get("LLAMA_CPP", os.path.expanduser("~/llama.cpp")), "gguf-py"))
+import csv
 import gguf
 from tqdm import tqdm
+
+
+def load_promote_order(ranking_csv: str) -> list:
+    """Ranked base names to promote v0->v1, best quality-per-byte first.
+    rank-experts.py already writes rows in that greedy order; keep only promotable ones."""
+    order = []
+    with open(ranking_csv) as f:
+        for row in sorted(csv.DictReader(f), key=lambda r: int(r["rank"])):
+            if row.get("promotable") == "1":
+                order.append(row["name"])
+    return order
 
 
 def main() -> None:
@@ -28,6 +40,9 @@ def main() -> None:
     ap.add_argument("--variant", required=True, help="variant-1 model (e.g. Q4_K)")
     ap.add_argument("--out",     required=True, help="output dual-precision GGUF")
     ap.add_argument("--pattern", default="_exps.", help="substring identifying the varianted tensors")
+    ap.add_argument("--ranking", default=None,
+                    help="ranking.csv from rank-experts.py; embeds general.tensor_variant.promote_order "
+                         "(ranked promotable base names) so the loader can solve the elastic budget knapsack")
     args = ap.parse_args()
 
     base = gguf.GGUFReader(args.base, "r")
@@ -53,6 +68,15 @@ def main() -> None:
     # declare the variant set
     writer.add_key_value("general.tensor_variant.count",   2, gguf.GGUFValueType.UINT32)
     writer.add_key_value("general.tensor_variant.default", 0, gguf.GGUFValueType.UINT32)
+    # elastic budget mode is off by default (0 -> use the global default above); a deployer turns it
+    # on per run with --override-kv general.tensor_variant.budget_mb=int:<MiB>
+    writer.add_key_value("general.tensor_variant.budget_mb", 0, gguf.GGUFValueType.UINT32)
+    if args.ranking:
+        order = load_promote_order(args.ranking)
+        writer.add_key_value("general.tensor_variant.promote_order", order,
+                             gguf.GGUFValueType.ARRAY, sub_type=gguf.GGUFValueType.STRING)
+        print(f"embedded promote_order manifest: {len(order)} ranked promotable tensors "
+              f"(first={order[0] if order else '-'})")
 
     # canonical tensors (all of base) + variant experts (from var) suffixed ".v1", same order for info & data
     items = [(t.name, t) for t in base.tensors]

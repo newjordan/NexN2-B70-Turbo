@@ -101,3 +101,39 @@ flips `--sm` to trade card-count for accuracy. No second download, no re-quantiz
 (Prefer two separate files — 15 GiB IQ3 + 18.8 GiB Q4_K — to save the ~15 GiB of unused bytes
 per mode on disk? `merge-tensor-variants.py`'s inputs are exactly those two files; ship them
 instead and drop `--override-kv`. The single file is the convenience default.)
+
+## Elastic precision (`0011`) — one file auto-fits ANY VRAM
+
+`--sm` picks one of two *global* points (all-IQ3 or all-Q4_K). Patch `0011` makes the same
+dual file **continuous**: it embeds a per-tensor importance ranking
+(`general.tensor_variant.promote_order`, from [`../scripts/rank-experts.py`](../scripts/rank-experts.py)),
+and the loader solves a load-time **budget knapsack** — start every expert at IQ3, greedily
+promote to Q4_K by imatrix-importance-per-byte until the weight footprint fits a target.
+
+```bash
+# elastic at load time: one file, precision dialed to the budget (no re-download, no re-quantize)
+llama-cli -m dual.gguf --override-kv general.tensor_variant.budget_mb=int:15900 ...
+```
+
+The per-tensor mix it selects is exactly a point on the **convex KLD frontier** measured in
+[`../results/elastic-precision/`](../results/elastic-precision/): e.g. ~+0.9 GiB over the
+all-IQ3 footprint (a 16 GB A770's spare headroom) closes ~34 % of the IQ3→Q4_K quality gap, on
+**one card, the same `0007`/`0008` kernels, zero new bytes downloaded**. `budget_mb` absent or
+`0` → unchanged `0010` behavior (upstream models untouched).
+
+### One-command install + autoprune
+
+[`../serving/install-nx2.sh`](../serving/install-nx2.sh) detects VRAM, picks the budget, and
+**autoprunes** the 34 GiB dual down to a single right-sized model (drops the unused variant
+bytes — "the excess"), then writes a launcher:
+
+```bash
+serving/install-nx2.sh                 # autodetect VRAM -> autoprune to fit -> run-nx2-fitted.sh
+serving/install-nx2.sh --vram-gib 16   # force A770 16 GB: fits a ~15.4 GiB model, 9 experts at Q4_K
+serving/install-nx2.sh --keep-dual     # keep the elastic dual, tune precision per-run instead
+```
+
+Under the hood it calls [`../scripts/prune-dual.py`](../scripts/prune-dual.py), which runs the
+**same greedy selection as the loader** (verified: the loader's `select_tensor_variant` and
+`prune-dual.py` produce identical per-tensor mixes at matched budgets). The pruned file is a
+plain single-precision GGUF — no variant machinery, loads anywhere.

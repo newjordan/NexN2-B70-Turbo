@@ -1,0 +1,153 @@
+# 0011 — elastic per-tensor precision: VRAM-budget knapsack in select_tensor_variant.
+# Applies on top of 0010 (src/llama-model-loader.cpp). When general.tensor_variant.budget_mb
+# > 0 (overridable via --override-kv), the loader starts every variant group at variant 0 and
+# greedily promotes to v1 in general.tensor_variant.promote_order while the total weight
+# footprint fits the budget — one dual.gguf serves any VRAM at the best-quality per-tensor mix.
+# budget_mb absent/0 -> unchanged 0010 global-default behavior (upstream-safe).
+# Companion tooling (not this C++ patch): scripts/merge-tensor-variants.py --ranking embeds
+# promote_order; scripts/prune-dual.py + serving/install-nx2.sh autoprune to a fitted file.
+
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index ddd80ca31..1d4aac41a 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -1051,16 +1051,29 @@ static ggml_backend_buffer_type_t select_weight_buft(const llama_hparams & hpara
+ 
+ void llama_model_loader::select_tensor_variant() {
+     // The file may carry sibling tensor variants named "<name>.v<N>" (N >= 1); variant 0 is the
+-    // canonical (unsuffixed) tensor. Exactly one variant is loaded per run. The selected index is
+-    // general.tensor_variant.default and is overridable with --override-kv. Absent that key this
+-    // returns immediately, so ordinary single-precision models are untouched.
+-    uint32_t variant = 0;
+-    if (!get_key(std::string("general.tensor_variant.default"), variant, /* required */ false)) {
++    // canonical (unsuffixed) tensor. Exactly one variant per group is loaded per run. Two modes:
++    //
++    //   (a) budget (elastic) mode -- general.tensor_variant.budget_mb > 0 (overridable with
++    //       --override-kv): start every group at variant 0 (cheapest, canonical) and greedily
++    //       promote groups to variant 1, in the ranked order of general.tensor_variant.promote_order
++    //       (best quality-per-byte first), while the total weight footprint fits the budget. One
++    //       file then serves any VRAM: the loader picks the highest-quality per-tensor mix that fits.
++    //
++    //   (b) global mode -- general.tensor_variant.default: every group resolves to that one index
++    //       (the original single-knob behavior).
++    //
++    // No-op when neither key is present, so ordinary single-precision models are untouched.
++    uint32_t variant_default = 0;
++    const bool have_default = get_key(std::string("general.tensor_variant.default"), variant_default, /* required */ false);
++
++    uint32_t budget_mb = 0;
++    const bool have_budget = get_key(std::string("general.tensor_variant.budget_mb"), budget_mb, /* required */ false);
++    const bool budget_mode = have_budget && budget_mb > 0;
++
++    if (!have_default && !budget_mode) {
+         return;
+     }
+ 
+-    const std::string suffix = variant == 0 ? std::string() : ".v" + std::to_string(variant);
+-
+     // group the sibling variants by their canonical (suffix-stripped) base name
+     static const std::regex re_variant(R"(^(.+)\.v([1-9][0-9]*)$)");
+     std::map<std::string, std::vector<std::string>> groups;
+@@ -1071,8 +1084,7 @@ void llama_model_loader::select_tensor_variant() {
+         }
+     }
+     if (groups.empty()) {
+-        LLAMA_LOG_WARN("%s: general.tensor_variant.default=%u is set but the file has no '<name>.v<N>' tensors\n",
+-            __func__, variant);
++        LLAMA_LOG_WARN("%s: a tensor_variant key is set but the file has no '<name>.v<N>' tensors\n", __func__);
+         return;
+     }
+     for (auto & g : groups) {
+@@ -1081,15 +1093,72 @@ void llama_model_loader::select_tensor_variant() {
+         }
+     }
+ 
++    // decide the selected variant index for every group
++    std::map<std::string, uint32_t> selected;
++    for (const auto & g : groups) {
++        selected[g.first] = budget_mode ? 0u : variant_default;
++    }
++
++    if (budget_mode) {
++        const size_t budget_bytes = (size_t) budget_mb * 1024u * 1024u;
++
++        // helper: byte size of a group's given variant (variant 0 == canonical base name)
++        auto variant_bytes = [&](const std::string & base, uint32_t v) -> size_t {
++            const std::string name = v == 0 ? base : base + ".v" + std::to_string(v);
++            const auto it = weights_map.find(name);
++            return it == weights_map.end() ? 0 : ggml_nbytes(it->second.tensor);
++        };
++
++        // baseline footprint = everything at variant 0: sum every weight that is NOT a ".v<N>"
++        // sibling (so non-varianted tensors + each group's canonical member are counted once).
++        size_t total = 0;
++        for (const auto & it : weights_map) {
++            std::smatch m;
++            if (std::regex_match(it.first, m, re_variant)) {
++                continue;
++            }
++            total += ggml_nbytes(it.second.tensor);
++        }
++        const size_t baseline = total;
++
++        // greedily promote v0 -> v1 in ranked order while the footprint fits (skip, don't stop, so a
++        // smaller later tensor can still slot in -- matches scripts/rank-experts.py's selection)
++        std::vector<std::string> order;
++        get_arr(std::string("general.tensor_variant.promote_order"), order, /* required */ false);
++        if (order.empty()) {
++            LLAMA_LOG_WARN("%s: budget_mb=%u set but general.tensor_variant.promote_order is missing/empty; "
++                "keeping all groups at variant 0\n", __func__, budget_mb);
++        }
++        size_t n_promoted = 0;
++        for (const auto & base : order) {
++            if (!groups.count(base) || selected[base] != 0) {
++                continue;
++            }
++            const size_t v0 = variant_bytes(base, 0);
++            const size_t v1 = variant_bytes(base, 1);
++            if (v1 <= v0 || total + (v1 - v0) > budget_bytes) {
++                continue;
++            }
++            selected[base] = 1;
++            total += v1 - v0;
++            n_promoted++;
++        }
++        LLAMA_LOG_INFO("%s: multi-precision model: budget %.2f GiB -> baseline %.2f GiB, selected %.2f GiB "
++            "(%zu/%zu groups promoted to v1)\n", __func__,
++            budget_bytes/1073741824.0, baseline/1073741824.0, total/1073741824.0, n_promoted, groups.size());
++    }
++
++    // resolve each group to its selected variant: drop the rest, rename the winner to canonical
+     size_t n_dropped = 0;
+     for (const auto & g : groups) {
+         const std::string & base = g.first;
+-        const std::string   want = base + suffix;
++        const uint32_t      v    = selected[base];
++        const std::string   want = v == 0 ? base : base + ".v" + std::to_string(v);
+ 
+         const auto it = weights_map.find(want);
+         if (it == weights_map.end()) {
+-            throw std::runtime_error(format("%s: requested tensor variant %u, but '%s' is missing from the file",
+-                __func__, variant, want.c_str()));
++            throw std::runtime_error(format("%s: requested tensor variant %u for '%s', but '%s' is missing from the file",
++                __func__, v, base.c_str(), want.c_str()));
+         }
+ 
+         llama_tensor_weight w = it->second;       // keep the selected weight (its file offset + meta)
+@@ -1102,8 +1171,14 @@ void llama_model_loader::select_tensor_variant() {
+     }
+ 
+     n_tensors = (int) weights_map.size();
+-    LLAMA_LOG_INFO("%s: multi-precision model: selected tensor variant %u (%s); %zu groups, dropped %zu sibling tensors\n",
+-        __func__, variant, suffix.empty() ? "canonical" : suffix.c_str(), groups.size(), n_dropped);
++    if (budget_mode) {
++        LLAMA_LOG_INFO("%s: multi-precision model: resolved %zu groups, dropped %zu sibling tensors\n",
++            __func__, groups.size(), n_dropped);
++    } else {
++        const std::string suffix = variant_default == 0 ? std::string() : ".v" + std::to_string(variant_default);
++        LLAMA_LOG_INFO("%s: multi-precision model: selected tensor variant %u (%s); %zu groups, dropped %zu sibling tensors\n",
++            __func__, variant_default, suffix.empty() ? "canonical" : suffix.c_str(), groups.size(), n_dropped);
++    }
+ }
+ 
+ struct ggml_tensor * llama_model_loader::create_tensor(

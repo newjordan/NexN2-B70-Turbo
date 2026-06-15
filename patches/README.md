@@ -37,6 +37,11 @@ A770-only patches start after the retained Turbo chain:
 0010 multi-precision tensor variant loader  (LANDED in wip/ - one GGUF, both precisions; --sm hot-swaps variant. Generic, upstream-safe)
      -> build:  scripts/merge-tensor-variants.py --base IQ3.gguf --variant Q4_K.gguf --out dual.gguf
      -> select: --override-kv general.tensor_variant.default=int:1   (default 0 = canonical IQ3)
+0011 elastic per-tensor precision  (LANDED in wip/ - one GGUF auto-fits ANY VRAM via a load-time budget knapsack; built on 0010, upstream-safe)
+     -> build:  scripts/merge-tensor-variants.py ... --ranking results/elastic-precision/ranking.csv   (embeds promote_order)
+     -> select: --override-kv general.tensor_variant.budget_mb=int:15900   (per-tensor IQ3->Q4_K greedy by imatrix importance/byte until it fits)
+     -> autoprune: scripts/prune-dual.py --dual dual.gguf --vram-gib 16 --out fitted.gguf   (materialize the fit, drop the excess ~half the bytes)
+     -> install:   serving/install-nx2.sh   (detect VRAM -> pick budget -> autoprune -> launcher)
 ```
 
 **`0005` (landed):** `block_iq3_a770` — a codebook-free 3-bit quant using Q3_K's
