@@ -1,0 +1,167 @@
+diff --git a/ggml/src/ggml-sycl/vecdotq.hpp b/ggml/src/ggml-sycl/vecdotq.hpp
+index 4b58b09ab..eb11923ce 100644
+--- a/ggml/src/ggml-sycl/vecdotq.hpp
++++ b/ggml/src/ggml-sycl/vecdotq.hpp
+@@ -1419,6 +1603,47 @@ vec_dot_iq3_s_q8_1(const void *__restrict__ vbq,
+ #endif
+ }
+ 
++// IQ3_A770: Q3_K-style bit packing (2 low bits in qs, 1 high bit in hmask) with a
++// non-uniform 8-entry LUT (kvalues_iq3nl) and 8 sub-blocks of 32 with 4-bit signed
++// scales. One vec_dot call covers one sub-block of 32: iqs == ib32 in [0,7], aligned
++// with q8_1 block ib32. Reproduces ggml_vec_dot_iq3_a770_q8_K (CPU oracle) bit-for-bit:
++//   code = ((qs[32*(is>>2) + l] >> (2*(is&3))) & 3) | (((hmask[l] >> is) & 1) << 2)
++//   x    = d * sc * kvalues_iq3nl[code],  sc = ((scales[is>>1] >> 4*(is&1)) & 0xF) - 8
++static __dpct_inline__ float
++vec_dot_iq3_a770_q8_1(const void *__restrict__ vbq,
++                      const block_q8_1 *__restrict__ bq8_1, const int &iqs) {
++#if QK_K == 256
++    const block_iq3_a770 * bq = (const block_iq3_a770 *) vbq;
++    const int8_t * kv = kvalues_iq3nl;
++
++    const int is    = iqs;            // sub-block of 32 (0..7)
++    const int shift = 2 * (is & 3);   // 2-bit field within the qs byte (0/2/4/6)
++
++    const uint8_t * qs = bq->qs + 32 * (is >> 2); // first half -> qs[0..31], second -> qs[32..63]
++    const uint8_t * hm = bq->hmask;
++    const int8_t  * q8 = bq8_1[is].qs;
++
++    int sumi = 0;
++#pragma unroll
++    for (int k = 0; k < 8; ++k) {     // 8 groups of 4 -> 8 dp4a over the 32-wide sub-block
++        const int l = 4 * k;
++        const int v =
++            ((kv[((qs[l + 0] >> shift) & 3) | (((hm[l + 0] >> is) & 1) << 2)] & 0xFF) <<  0) |
++            ((kv[((qs[l + 1] >> shift) & 3) | (((hm[l + 1] >> is) & 1) << 2)] & 0xFF) <<  8) |
++            ((kv[((qs[l + 2] >> shift) & 3) | (((hm[l + 2] >> is) & 1) << 2)] & 0xFF) << 16) |
++            ((kv[((qs[l + 3] >> shift) & 3) | (((hm[l + 3] >> is) & 1) << 2)] & 0xFF) << 24);
++        sumi = dpct::dp4a(v, get_int_from_int8(q8, k), sumi);
++    }
++
++    const int   sc = (int)((bq->scales[is >> 1] >> (4 * (is & 1))) & 0xF) - 8;
++    const float d  = (float) bq->d * sc * bq8_1[is].ds[0];
++    return d * sumi;
++#else
++    assert(false);
++    return 0.f;
++#endif
++}
++
+ static __dpct_inline__ float
+ vec_dot_iq1_s_q8_1(const void *__restrict__ vbq,
+                    const block_q8_1 *__restrict__ bq8_1, const int &iqs,
+
+diff --git a/ggml/src/ggml-sycl/mmvq.cpp b/ggml/src/ggml-sycl/mmvq.cpp
+index 26176037f..0a1c28234 100644
+--- a/ggml/src/ggml-sycl/mmvq.cpp
++++ b/ggml/src/ggml-sycl/mmvq.cpp
+@@ -464,6 +464,54 @@ static void mul_mat_vec_q_iq3_s_q8_1(const void *__restrict__ vx,
+     }
+ }
+ 
++template <int qk, int qi, typename block_q_t, int vdr>
++static void mul_mat_vec_q_iq3_a770_q8_1(const void *__restrict__ vx,
++                                        const void *__restrict__ vy,
++                                        float *__restrict__ dst, const int ncols,
++                                        const int nrows,
++                                        const sycl::nd_item<3> &item_ct1) {
++    const int row = item_ct1.get_group(2) * item_ct1.get_local_range(1) +
++                    item_ct1.get_local_id(1);
++
++    if (row >= nrows) {
++        return;
++    }
++
++    const int blocks_per_row = ncols / qk;
++    const int blocks_per_warp = vdr * WARP_SIZE / qi;
++    assert(blocks_per_warp>0);
++// partial sum for each thread
++    float tmp = 0.0f;
++
++    const block_q_t  * x = (const block_q_t  *) vx;
++    const block_q8_1 * y = (const block_q8_1 *) vy;
++
++    for (int i = item_ct1.get_local_id(2) / (qi / vdr); i < blocks_per_row;
++         i += blocks_per_warp) {
++        const int ibx = row*blocks_per_row + i; // x block index
++
++        const int iby = i * (qk/QK8_1); // y block index that aligns with ibx
++
++        const int iqs =
++            vdr *
++            (item_ct1.get_local_id(2) %
++             (qi / vdr)); // x sub-block (ib32) index
++
++        tmp += vec_dot_iq3_a770_q8_1(&x[ibx], &y[iby], iqs);
++    }
++
++    // sum up partial sums and write back result
++#pragma unroll
++    for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
++        tmp +=
++            dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), tmp, mask);
++    }
++
++    if (item_ct1.get_local_id(2) == 0) {
++        dst[row] = tmp;
++    }
++}
++
+ template <int qk, int qi, typename block_q_t, int vdr>
+ static void mul_mat_vec_q_iq1_s_q8_1(const void *__restrict__ vx,
+                                      const void *__restrict__ vy,
+@@ -1874,6 +1922,29 @@ static void mul_mat_vec_iq3_s_q8_1_sycl(const void *vx, const void *vy,
+     }
+ }
+ 
++static void mul_mat_vec_iq3_a770_q8_1_sycl(const void *vx, const void *vy,
++                                           float *dst, const int ncols,
++                                           const int nrows,
++                                           dpct::queue_ptr stream) {
++    GGML_ASSERT(ncols % QK_K == 0);
++    const int block_num_y = (nrows + GGML_SYCL_MMV_Y - 1) / GGML_SYCL_MMV_Y;
++    const sycl::range<3> block_nums(1, 1, block_num_y);
++    const sycl::range<3> block_dims(1, GGML_SYCL_MMV_Y, WARP_SIZE);
++    {
++
++        stream->submit([&](sycl::handler &cgh) {
++            cgh.parallel_for(
++                sycl::nd_range<3>(block_nums * block_dims, block_dims),
++                [=](sycl::nd_item<3> item_ct1)
++                    [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
++                        // 8 sub-blocks of 32 per super-block -> qi = 8, one thread per sub-block
++                        mul_mat_vec_q_iq3_a770_q8_1<QK_K, 8, block_iq3_a770, 1>(
++                            vx, vy, dst, ncols, nrows, item_ct1);
++                    });
++        });
++    }
++}
++
+ static void mul_mat_vec_iq1_s_q8_1_sycl(const void *vx, const void *vy,
+                                           float *dst, const int ncols,
+                                           const int nrows,
+@@ -2270,6 +2341,9 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
+             case GGML_TYPE_IQ3_S:
+                 mul_mat_vec_iq3_s_q8_1_sycl(src0_dd_i, src1_ddq_i_bs, dst_dd_i_bs, ne00, row_diff, stream);
+                 break;
++            case GGML_TYPE_IQ3_A770:
++                mul_mat_vec_iq3_a770_q8_1_sycl(src0_dd_i, src1_ddq_i_bs, dst_dd_i_bs, ne00, row_diff, stream);
++                break;
+             case GGML_TYPE_IQ4_NL:
+                 mul_mat_vec_iq4_nl_q8_1_sycl(src0_dd_i, src1_ddq_i_bs, dst_dd_i_bs, ne00, row_diff, stream);
+                 break;
+diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
+index b9a0080c8..7baa08366 100644
+--- a/ggml/src/ggml-sycl/ggml-sycl.cpp
++++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
+@@ -4211,7 +4253,9 @@ static bool can_use_dequantize_mul_mat_vec(const ggml_tensor * src0, const ggml_
+ }
+ 
+ static bool can_use_mul_mat_vec_q(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+-    return ggml_is_quantized(src0->type) && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32 &&
++    // IQ3_A770 (M2): dp4a mul_mat_vec_q kernel reads the packed 3.19bpw form directly.
++    return ggml_is_quantized(src0->type) &&
++           src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32 &&
+            src1->ne[1] <= MMVQ_MAX_BATCH_SIZE;
+ }
+ 

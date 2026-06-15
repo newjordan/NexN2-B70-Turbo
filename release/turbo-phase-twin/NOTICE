@@ -1,10 +1,11 @@
-NexN2 B70 Turbo — NOTICE & Attributions
-=======================================
+Nex-N2-mini — Turbo Phase Twin — NOTICE & Attributions
+======================================================
 
-NexN2 B70 Turbo packages, quantizes, optimizes, and serves the Nex-N2-mini
-language model on the Intel Arc Pro B70. It is an UNOFFICIAL, community project
-and is NOT affiliated with, endorsed by, or sponsored by Nex-AGI, the Qwen Team
-or Alibaba, Intel Corporation, or the llama.cpp / ggml project.
+Turbo Phase Twin packages, quantizes, optimizes, and serves the Nex-N2-mini
+language model on Intel Arc (A770 / Arc Pro B70, SYCL). It is an UNOFFICIAL,
+community project and is NOT affiliated with, endorsed by, or sponsored by
+Nex-AGI, the Qwen Team or Alibaba, Intel Corporation, the llama.cpp / ggml
+project, or any other party named below.
 
 ----------------------------------------------------------------------
 Model lineage and licenses (Apache License 2.0 throughout)
@@ -21,23 +22,27 @@ Model lineage and licenses (Apache License 2.0 throughout)
    Licensed under the Apache License, Version 2.0.
    https://huggingface.co/nex-agi/Nex-N2-mini  |  https://nex-agi.com
    https://github.com/nex-agi/Nex-N2  |  https://huggingface.co/nex-agi
-   Post-trained on Qwen3.5-35B-A3B-Base.
-   This project is ENTIRELY a quantization of Nex-AGI's work: the model, its reasoning and
-   multimodal capabilities, and all of its training are theirs. These GGUFs only change the
-   numeric precision so the model runs fast on Intel Arc. With gratitude to the Nex-AGI team.
+   Post-trained on Qwen3.5-35B-A3B-Base. Includes the vision projector
+   (mmproj-f16.gguf) redistributed here.
+   Turbo Phase Twin is ENTIRELY a quantization of Nex-AGI's work: the model, its reasoning
+   and multimodal capabilities, and all of its training are theirs. This project only changes
+   the numeric precision so the model runs fast on Intel Arc. With gratitude to the Nex-AGI
+   team for releasing it openly.
 
-3. Nex-N2-mini-B70-Turbo-GGUF — quantized derivatives (this project's weights)
+3. Nex-N2-mini — Turbo Phase Twin — quantized derivative (this project's weights)
    Derivative work of Nex-N2-mini, redistributed under the Apache License,
    Version 2.0 (attribution above preserved per Section 4(c/d)).
    Changes made to the original work (per Apache-2.0 Section 4(b)):
      - Converted from the original safetensors to the GGUF format.
-     - Quantized to Q3_K_S / Q3_K_M / Q4_K_M / Q5_K_M / IQ4_XS and dynamic
-       mixes using a llama.cpp importance matrix (imatrix).
+     - MoE expert tensors quantized two ways and packed into one dual-variant
+       ("twin") GGUF: a codebook-free 3-bit type (IQ3_A770, ~3.19 bpw) and Q4_K
+       (~4.5 bpw); non-expert tensors quantized to Q6_K. Both quant sets use a
+       llama.cpp importance matrix (imatrix).
      - The GGUF metadata `qwen35moe.block_count` and
        `qwen35moe.nextn_predict_layers` were set to 40 and 0 respectively so the
        model loads in llama.cpp. The MTP/NextN head is speculative-only and is
        absent from the published checkpoint; this is lossless for standard
-       inference (see docs/methodology.md).
+       inference.
    The model weights are not otherwise altered beyond quantization.
 
 ----------------------------------------------------------------------
@@ -47,16 +52,31 @@ Software, tooling, and data
 4. llama.cpp / ggml
    Copyright (c) 2023-2026 The ggml authors and the llama.cpp contributors.
    Licensed under the MIT License.  https://github.com/ggml-org/llama.cpp
-   The reorder-on-MoE kernel in patches/0001-*.patch is a derivative work of
-   llama.cpp's SYCL backend. The original MIT copyright and permission notice
-   are retained in the modified source files. Modifications by this project are
-   licensed under the MIT License (see LICENSE).
+   The included build patch (build/llama.cpp-turbo-phase-twin.patch) is a
+   derivative work of llama.cpp's SYCL backend, type system, and model loader:
+     - SYCL reordered MoE mul_mat_id decode + fused gate/up SwiGLU,
+     - the GGML_TYPE_IQ3_A770 codebook-free 3-bit quant type (CPU + SYCL),
+     - the multi-precision "tensor variant" model loader (the --sm twin swap).
+   The original MIT copyright and permission notices are retained in the
+   modified source files. Modifications by this project are likewise licensed
+   under the MIT License (see LICENSE).
 
-5. Importance-matrix calibration: "calibration_datav3" by Bartowski, used to
+5. k-quants (Q-K block formats) by Iwan Kawrakow (ikawrakow) and the ggml
+   authors, part of llama.cpp under the MIT License. IQ3_A770 reuses Q3_K's
+   superblock bit-packing (2 low bits in `qs`, 1 high bit in `hmask`, 8×32
+   sub-blocks with 4-bit scales); Q6_K is used for non-expert tensors.
+
+6. Non-uniform code points. The IQ3_A770 8-entry value table is a NormalFloat-
+   style (non-uniform, zero-centered) codebook, an approach popularized by
+   QLoRA / NF4 (Dettmers et al., 2023, "QLoRA: Efficient Finetuning of
+   Quantized LLMs"). The specific table and the codebook-free packing are this
+   project's own; the design influence is acknowledged here.
+
+7. Importance-matrix calibration: "calibration_datav3" by Bartowski, used to
    compute the imatrix that guides quantization. The imatrix is aggregate
    per-tensor statistics derived from the calibration text, not the text itself.
 
-6. Evaluation: WikiText-2 (Merity et al., 2016; CC BY-SA 3.0) was used only to
+8. Evaluation: WikiText-2 (Merity et al., 2016; CC BY-SA 3.0) was used only to
    compute perplexity and KL-divergence. It is not redistributed in this project.
 
 ----------------------------------------------------------------------
@@ -82,5 +102,6 @@ Citation
 Please also credit Nex-AGI's Nex-N2-mini (https://github.com/nex-agi/Nex-N2) as
 the base model these quantizations are built from.
 
-This project's own original code and documentation are licensed under the MIT
-License; see the LICENSE file.
+This project's own original code and documentation (the patch, launcher, and
+build scripts) are licensed under the MIT License. Full methodology and
+reproducible benchmarks: https://github.com/newjordan/NexN2-B70-Turbo

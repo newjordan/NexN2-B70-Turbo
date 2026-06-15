@@ -7,6 +7,8 @@
 - `methodology.md` - measurement setup, controls, and correctness criteria.
 - `kernel-release-gate.md` - policy for deciding whether new kernel results justify updating the HF card.
 - `upstream-sycl-readiness.md` - notes for the llama.cpp SYCL PR.
+- `a770-iq3-expert-residency.md` - A770-specific IQ3 expert residency experiment plan.
+- `iq3-a770-block-layout.md` - frozen IQ3_A770 block layout/bpw spec + patch 0005 (CPU oracle) results.
 
 ## Operational
 

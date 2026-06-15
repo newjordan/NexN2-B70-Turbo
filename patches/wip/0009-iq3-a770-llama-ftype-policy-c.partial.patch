@@ -1,0 +1,72 @@
+diff --git a/include/llama.h b/include/llama.h
+index 27e480674..55ac63948 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -155,6 +155,7 @@ extern "C" {
+         LLAMA_FTYPE_MOSTLY_MXFP4_MOE     = 38, // except 1d tensors
+         LLAMA_FTYPE_MOSTLY_NVFP4         = 39, // except 1d tensors
+         LLAMA_FTYPE_MOSTLY_Q1_0          = 40, // except 1d tensors
++        LLAMA_FTYPE_MOSTLY_IQ3_A770      = 41, // except 1d tensors (A770 MoE-expert 3.19 bpw, Policy C)
+ 
+         LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
+     };
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index 0d1cf3cc3..708cc38c9 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -68,6 +68,7 @@ static std::string llama_model_ftype_name(llama_ftype ftype) {
+         case LLAMA_FTYPE_MOSTLY_IQ4_XS:   return "IQ4_XS - 4.25 bpw";
+         case LLAMA_FTYPE_MOSTLY_IQ3_S:    return "IQ3_S - 3.4375 bpw";
+         case LLAMA_FTYPE_MOSTLY_IQ3_M:    return "IQ3_S mix - 3.66 bpw";
++        case LLAMA_FTYPE_MOSTLY_IQ3_A770: return "IQ3_A770 - 3.19 bpw MoE experts (A770)";
+ 
+         default: return "unknown, may not work";
+     }
+@@ -759,6 +760,7 @@ llama_model_loader::llama_model_loader(
+             case GGML_TYPE_IQ4_NL:  ftype = LLAMA_FTYPE_MOSTLY_IQ4_NL;  break;
+             case GGML_TYPE_IQ4_XS:  ftype = LLAMA_FTYPE_MOSTLY_IQ4_XS;  break;
+             case GGML_TYPE_IQ3_S:   ftype = LLAMA_FTYPE_MOSTLY_IQ3_S;   break;
++            case GGML_TYPE_IQ3_A770: ftype = LLAMA_FTYPE_MOSTLY_IQ3_A770; break;
+             case GGML_TYPE_NVFP4:   ftype = LLAMA_FTYPE_MOSTLY_NVFP4;   break;
+             case GGML_TYPE_Q1_0:    ftype = LLAMA_FTYPE_MOSTLY_Q1_0;    break;
+             default:
+diff --git a/src/llama-quant.cpp b/src/llama-quant.cpp
+index cf92ce4bb..715604b0c 100644
+--- a/src/llama-quant.cpp
++++ b/src/llama-quant.cpp
+@@ -418,6 +418,15 @@ static ggml_type llama_tensor_get_type_impl(quantize_state_impl & qs, ggml_type
+         return i_layer < n_layers/8 || i_layer >= 7*n_layers/8 || (i_layer - n_layers/8)%3 == 2;
+     };
+     const int n_expert = std::max(1, (int)qs.model.hparams.n_expert);
++
++    // Dedicated IQ3_A770 file type (Policy C): MoE experts (3D ffn_*_exps) -> IQ3_A770; non-experts
++    // fall through to the Q6_K base (set by llama_ftype_get_default_type) with the standard fallbacks.
++    if (ftype == LLAMA_FTYPE_MOSTLY_IQ3_A770 && tensor->ne[2] > 1 &&
++        (category == tensor_category::FFN_DOWN || category == tensor_category::FFN_GATE ||
++         category == tensor_category::FFN_UP)) {
++        return GGML_TYPE_IQ3_A770;
++    }
++
+     auto layer_info = [n_expert] (int i_layer, int n_layer, const char * name) {
+         if (n_expert > 1) {
+             // Believe it or not, "experts" in the FFN of Mixtral-8x7B are not consecutive, but occasionally randomly
+@@ -828,6 +837,7 @@ ggml_type llama_ftype_get_default_type(llama_ftype ftype) {
+         case LLAMA_FTYPE_MOSTLY_IQ4_XS:  return GGML_TYPE_IQ4_XS;
+         case LLAMA_FTYPE_MOSTLY_IQ3_S:
+         case LLAMA_FTYPE_MOSTLY_IQ3_M:   return GGML_TYPE_IQ3_S;
++        case LLAMA_FTYPE_MOSTLY_IQ3_A770: return GGML_TYPE_Q6_K; // Policy C base (non-experts); experts -> IQ3_A770 in llama_tensor_get_type_impl
+ 
+         default: return GGML_TYPE_COUNT;
+     }
+diff --git a/tools/quantize/quantize.cpp b/tools/quantize/quantize.cpp
+index 840eefc2f..6d6c90007 100644
+--- a/tools/quantize/quantize.cpp
++++ b/tools/quantize/quantize.cpp
+@@ -51,6 +51,7 @@ static const std::vector<quant_option> QUANT_OPTIONS = {
+     { "IQ3_XXS",  LLAMA_FTYPE_MOSTLY_IQ3_XXS,  " 3.06 bpw quantization",            },
+     { "IQ3_S",    LLAMA_FTYPE_MOSTLY_IQ3_S,    " 3.44 bpw quantization",            },
+     { "IQ3_M",    LLAMA_FTYPE_MOSTLY_IQ3_M,    " 3.66 bpw quantization mix",        },
++    { "IQ3_A770", LLAMA_FTYPE_MOSTLY_IQ3_A770, " 3.19 bpw MoE experts (A770), Q6_K else", },
+     { "Q3_K",     LLAMA_FTYPE_MOSTLY_Q3_K_M,   "alias for Q3_K_M"                   },
+     { "IQ3_XS",   LLAMA_FTYPE_MOSTLY_IQ3_XS,   " 3.3 bpw quantization",             },
+     { "Q3_K_S",   LLAMA_FTYPE_MOSTLY_Q3_K_S,   " 3.41G, +1.6321 ppl @ Llama-3-8B",  },

@@ -8,6 +8,52 @@ coverage from `0003`): https://github.com/ggml-org/llama.cpp/pull/24452
 Patch `0004` is the project-local NX2 fusion package and is not part of that
 minimal upstream PR.
 
+## A770 IQ3 expert residency branch
+
+Branch `a770-iq3-expert-residency` keeps the B70 Turbo patch chain intact and
+uses it as the base for an A770 16GB residency experiment. The branch target is
+**Nex-N2-mini** (`qwen35moe`: ~34.7B total / ~A3B active, 256 experts, hybrid
+linear-attention with full attention every 4th layer), used as a single-card
+A770 residency testbed rather than the B70 Turbo release model. The success
+criterion is single-card residency plus usable fused-SYCL decode rather than
+beating the B70 Q4/Q5 frontier.
+
+Early calibration may run on the B70, but those runs are valid for this branch
+only when they keep an audited 16GB residency ledger for model weights, KV,
+scratch, and lazy-reorder buffers. Single-A770 throughput remains the promotion
+hardware. Active expert residency means switching which MoE expert groups are
+hot when the route pattern demands it; multi-card and symlink/layout simulation
+work comes after the single-card IQ3 path is real.
+
+A770-only patches start after the retained Turbo chain:
+
+```text
+0005 GGML_TYPE_IQ3_A770 plumbing            (LANDED - CPU oracle)
+0006 IQ3 SYCL dequant + vecdot reference kernel (M1 dequant + M2 dp4a mmvq - landed in wip/, B70-validated)
+0007 IQ3 MoE MUL_MAT_ID reordered decode path  (LANDED in wip/ - tg 43.6->78.7 t/s, beats stock Q3_K_M 62; needs init_tensor extra fix)
+0008 exact MoE fused gate/up path  (LANDED in wip/ - fused gate/up+SwiGLU, tg 79.0->82.0 t/s +3.8%; branch a770-iq3-swiglu)
+0009 tensor policy + quant ftype  (dedicated LLAMA_FTYPE_MOSTLY_IQ3_A770 + Policy C LANDED in wip/; L2 asym-down deferred)
+     -> usage: llama-quantize --imatrix NX2.imatrix NX2-bf16.gguf out.gguf iq3_a770   (experts->IQ3_A770, rest->Q6_K)
+0010 multi-precision tensor variant loader  (LANDED in wip/ - one GGUF, both precisions; --sm hot-swaps variant. Generic, upstream-safe)
+     -> build:  scripts/merge-tensor-variants.py --base IQ3.gguf --variant Q4_K.gguf --out dual.gguf
+     -> select: --override-kv general.tensor_variant.default=int:1   (default 0 = canonical IQ3)
+```
+
+**`0005` (landed):** `block_iq3_a770` — a codebook-free 3-bit quant using Q3_K's
+`qs`/`hmask` packing with 8 sub-blocks of 32 and 4-bit signed scales (102 B,
+3.1875 bpw). CPU quantize/dequant/`vec_dot` (`vec_dot_type = Q8_K`) + full type
+registration; no SYCL (disjoint from the `0004` SYCL WIP). A0 validation: oracle
+`vec_dot` is bit-exact vs dequantize-then-dot (rel diff ~1e-7), round-trip NRMSE
+0.142, **Policy C quantize = 14.92 GB** (fits one A770 16 GB), and CPU inference
+generates coherent text. Use it now via `--tensor-type ffn_*_exps=iq3_a770` on a
+`q6_k` base (Policy C) — no dedicated ftype required yet. See
+[`../docs/iq3-a770-block-layout.md`](../docs/iq3-a770-block-layout.md) §10.
+
+See [`../docs/a770-iq3-expert-residency.md`](../docs/a770-iq3-expert-residency.md)
+for the tensor policy, benchmark matrix, and promotion bar, and
+[`../docs/iq3-a770-block-layout.md`](../docs/iq3-a770-block-layout.md) for the
+frozen block layout. `0006+` (SYCL) remain to be built.
+
 Apply on a clean checkout at the pinned base, in order:
 
 ```bash

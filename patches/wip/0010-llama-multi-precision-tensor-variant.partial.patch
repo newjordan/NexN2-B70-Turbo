@@ -1,0 +1,117 @@
+diff --git a/gguf-py/gguf/constants.py b/gguf-py/gguf/constants.py
+index bd6246137..9ba5144a5 100644
+--- a/gguf-py/gguf/constants.py
++++ b/gguf-py/gguf/constants.py
+@@ -4350,6 +4350,7 @@ class GGMLQuantizationType(IntEnum):
+     MXFP4   = 39
+     NVFP4   = 40
+     Q1_0    = 41
++    IQ3_A770 = 42
+ 
+ 
+ class ExpertGatingFuncType(IntEnum):
+@@ -4529,6 +4530,7 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
+     GGMLQuantizationType.MXFP4:   (32, 1 + 16),
+     GGMLQuantizationType.NVFP4:   (64, 4 + 32),
+     GGMLQuantizationType.Q1_0:    (128, 2 + 16),
++    GGMLQuantizationType.IQ3_A770: (256, 2 + QK_K // 4 + QK_K // 8 + 4),
+ }
+ 
+ 
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index 0d1cf3cc3..ddd80ca31 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -705,6 +706,10 @@ llama_model_loader::llama_model_loader(
+     LLAMA_LOG_INFO("%s: loaded meta data with %d key-value pairs and %d tensors from %s (version %s)\n",
+             __func__, n_kv, n_tensors, fname.empty() ? "(file*)" : fname.c_str(), llama_file_version_name(fver));
+ 
++    // multi-precision GGUF: collapse "<name>.v<N>" sibling variants down to the selected one, so
++    // ftype detection and tensor creation below operate on a single-precision tensor set.
++    select_tensor_variant();
++
+     // determine file type based on the number of tensors for each quantization and print meta data
+     // TODO: make optional
+     {
+@@ -1043,6 +1049,63 @@ static ggml_backend_buffer_type_t select_weight_buft(const llama_hparams & hpara
+     return nullptr;
+ }
+ 
++void llama_model_loader::select_tensor_variant() {
++    // The file may carry sibling tensor variants named "<name>.v<N>" (N >= 1); variant 0 is the
++    // canonical (unsuffixed) tensor. Exactly one variant is loaded per run. The selected index is
++    // general.tensor_variant.default and is overridable with --override-kv. Absent that key this
++    // returns immediately, so ordinary single-precision models are untouched.
++    uint32_t variant = 0;
++    if (!get_key(std::string("general.tensor_variant.default"), variant, /* required */ false)) {
++        return;
++    }
++
++    const std::string suffix = variant == 0 ? std::string() : ".v" + std::to_string(variant);
++
++    // group the sibling variants by their canonical (suffix-stripped) base name
++    static const std::regex re_variant(R"(^(.+)\.v([1-9][0-9]*)$)");
++    std::map<std::string, std::vector<std::string>> groups;
++    for (const auto & it : weights_map) {
++        std::smatch m;
++        if (std::regex_match(it.first, m, re_variant)) {
++            groups[m[1].str()].push_back(it.first);
++        }
++    }
++    if (groups.empty()) {
++        LLAMA_LOG_WARN("%s: general.tensor_variant.default=%u is set but the file has no '<name>.v<N>' tensors\n",
++            __func__, variant);
++        return;
++    }
++    for (auto & g : groups) {
++        if (weights_map.count(g.first)) {
++            g.second.push_back(g.first); // include the canonical (variant 0) member, if present
++        }
++    }
++
++    size_t n_dropped = 0;
++    for (const auto & g : groups) {
++        const std::string & base = g.first;
++        const std::string   want = base + suffix;
++
++        const auto it = weights_map.find(want);
++        if (it == weights_map.end()) {
++            throw std::runtime_error(format("%s: requested tensor variant %u, but '%s' is missing from the file",
++                __func__, variant, want.c_str()));
++        }
++
++        llama_tensor_weight w = it->second;       // keep the selected weight (its file offset + meta)
++        for (const auto & name : g.second) {
++            weights_map.erase(name);              // drop every variant of this base
++        }
++        ggml_set_name(w.tensor, base.c_str());    // meta name -> canonical (create_tensor copies it onto the loaded tensor)
++        weights_map.emplace(base, w);             // re-bind the selected weight under the canonical name
++        n_dropped += g.second.size() - 1;
++    }
++
++    n_tensors = (int) weights_map.size();
++    LLAMA_LOG_INFO("%s: multi-precision model: selected tensor variant %u (%s); %zu groups, dropped %zu sibling tensors\n",
++        __func__, variant, suffix.empty() ? "canonical" : suffix.c_str(), groups.size(), n_dropped);
++}
++
+ struct ggml_tensor * llama_model_loader::create_tensor(
+         const llama_hparams & hparams, const buft_list_t * buft_list_cpu, const buft_list_t * buft_list_input, const buft_list_t * buft_list_output,
+         const buft_list_t * buft_list_layer, const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags) {
+diff --git a/src/llama-model-loader.h b/src/llama-model-loader.h
+index c476026d3..ccf596ec9 100644
+--- a/src/llama-model-loader.h
++++ b/src/llama-model-loader.h
+@@ -133,6 +133,13 @@ struct llama_model_loader {
+         const llama_model_kv_override * param_overrides_p,
+         const llama_model_tensor_buft_override * param_tensor_buft_overrides_p);
+ 
++    // Multi-precision GGUF support: a tensor group may ship sibling variants stored as
++    // "<name>.v<N>" (N >= 1); variant 0 is the canonical (unsuffixed) tensor. This resolves the
++    // file down to a single selected variant (general.tensor_variant.default, overridable with
++    // --override-kv) before the rest of the loader runs. No-op when the key is absent, so ordinary
++    // single-precision models are unaffected.
++    void select_tensor_variant();
++
+     template<typename T>
+     typename std::enable_if<std::is_integral<T>::value, bool>::type
+     get_arr_n(const std::string & key, T & result, bool required = true);

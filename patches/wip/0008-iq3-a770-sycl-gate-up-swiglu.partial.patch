@@ -1,0 +1,40 @@
+diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
+index 1fa4868..4306594 100644
+--- a/ggml/src/ggml-sycl/ggml-sycl.cpp
++++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
+@@ -4625,6 +4625,7 @@ static bool ggml_sycl_should_fuse_moe_gate_up_swiglu(
+         case GGML_TYPE_Q4_K:
+         case GGML_TYPE_Q5_K:
+         case GGML_TYPE_Q6_K:
++        case GGML_TYPE_IQ3_A770:
+             return true;
+         default:
+             return false;
+@@ -4747,7 +4748,8 @@ static bool ggml_sycl_is_nx2_moe_gate_up_swiglu_shape(
+ 
+     const ggml_tensor * up_w = up->src[0];
+     const ggml_tensor * ids  = up->src[2];
+-    return (up_w->type == GGML_TYPE_Q4_K || up_w->type == GGML_TYPE_Q5_K) &&
++    return (up_w->type == GGML_TYPE_Q4_K || up_w->type == GGML_TYPE_Q5_K ||
++            up_w->type == GGML_TYPE_IQ3_A770) &&
+         up_w->ne[0] == 2048 && up_w->ne[1] == 512 && ids->ne[0] == 8;
+ }
+ 
+diff --git a/ggml/src/ggml-sycl/mmvq.cpp b/ggml/src/ggml-sycl/mmvq.cpp
+index c51d3ac..9ddfa6f 100644
+--- a/ggml/src/ggml-sycl/mmvq.cpp
++++ b/ggml/src/ggml-sycl/mmvq.cpp
+@@ -3899,6 +3899,13 @@ bool ggml_sycl_mul_mat_vec_q_id_swiglu_reorder(
+                 vup_base, vgate_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
+                 expert_weight_stride, dst_row_stride, src1_row_stride, stream);
+             return true;
++        case GGML_TYPE_IQ3_A770:
++            // IQ3 uses the generic fused gate/up swiglu (the nx2-specialized kernel asserts
++            // qi/vdr==WARP_SIZE, which IQ3's qi=8 reorder trait does not satisfy).
++            launch_mul_mat_vec_q_moe_swiglu_reorder<reorder_vec_dot_q_sycl<GGML_TYPE_IQ3_A770>>(
++                vup_base, vgate_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
++                expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++            return true;
+         default:
+             return false;
+     }

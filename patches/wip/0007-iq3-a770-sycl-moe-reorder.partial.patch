@@ -1,0 +1,408 @@
+diff --git a/ggml/src/ggml-sycl/quants.hpp b/ggml/src/ggml-sycl/quants.hpp
+index 95287f175..4528183e7 100644
+--- a/ggml/src/ggml-sycl/quants.hpp
++++ b/ggml/src/ggml-sycl/quants.hpp
+@@ -83,6 +83,33 @@ template <> struct block_q_t<GGML_TYPE_Q3_K> {
+     static constexpr int block_to_q8_1_ratio() { return traits::qk / QK8_1; }
+ };
+ 
++template <> struct block_q_t<GGML_TYPE_IQ3_A770> {
++    struct traits {
++        static constexpr uint32_t qk       = QK_K;
++        // qi = 8 (not QI3_K=16): the reorder MoE kernel derives iqs from qi/vdr, so qi=8 makes it
++        // feed iqs = ib32 in [0,7] -- one sub-block of 32 per LUT vec_dot, matching the M2 dp4a dot.
++        static constexpr uint32_t qi       = 8;
++        static constexpr uint32_t qr       = QR3_K;
++        static constexpr uint32_t vdr_mmvq = 1;
++    };
++
++    // Reordered layout (mirrors Q3_K, smaller scale plane): [qs (QK_K/4)] [hmask (QK_K/8)] [scales (4)] [d]
++    static constexpr std::pair<int, int> get_block_offset(const int block_index, const int n_blocks) {
++        auto qs_offset    = block_index * (QK_K / 4);
++        auto hmask_offset = n_blocks * (QK_K / 4) + block_index * (QK_K / 8);
++        return { qs_offset, hmask_offset };
++    }
++
++    static constexpr std::pair<int, int> get_d_offset(int nrows, int ncols, const int block_index) {
++        auto nblocks        = (nrows * (ncols / QK_K));
++        auto total_qs_bytes = nblocks * (QK_K / 4) + nblocks * (QK_K / 8);
++        return { total_qs_bytes + block_index * 4,
++                 total_qs_bytes + nblocks * 4 + block_index * sizeof(ggml_half) };
++    }
++
++    static constexpr int block_to_q8_1_ratio() { return traits::qk / QK8_1; }
++};
++
+ template <> struct block_q_t<GGML_TYPE_Q4_K> {
+     struct traits {
+         static constexpr uint32_t qk       = QK_K;
+
+diff --git a/ggml/src/ggml-sycl/vecdotq.hpp b/ggml/src/ggml-sycl/vecdotq.hpp
+index 4b58b09ab..fc2af979c 100644
+--- a/ggml/src/ggml-sycl/vecdotq.hpp
++++ b/ggml/src/ggml-sycl/vecdotq.hpp
+@@ -429,6 +433,45 @@ template <> struct reorder_vec_dot_q_sycl<GGML_TYPE_Q3_K> {
+     }
+ };
+ 
++template <> struct reorder_vec_dot_q_sycl<GGML_TYPE_IQ3_A770> {
++    static constexpr ggml_type gtype = GGML_TYPE_IQ3_A770;
++
++    using iq3_block  = ggml_sycl_reordered::block_q_t<GGML_TYPE_IQ3_A770>;
++    using iq3_traits = typename iq3_block::traits;
++
++    // iqs == ib32 (sub-block of 32, 0..7), driven by traits::qi == 8. Reads the SoA planes
++    // [qs][hmask][scales][d] and reproduces vec_dot_iq3_a770_q8_1 (the M2 dense dp4a kernel).
++    __dpct_inline__ float operator()(const void * __restrict__ vbq, const std::pair<int, int> ibx_offset,
++                                     const std::pair<int, int> d_offset, const int8_t * q8_1_quant_ptr,
++                                     const sycl::half2 * q8_1_ds, const int & iqs) {
++        const uint8_t * base   = static_cast<const uint8_t *>(vbq);
++        const int8_t  * kv     = kvalues_iq3nl;
++        const int       is     = iqs;            // sub-block of 32 (0..7)
++        const int       shift  = 2 * (is & 3);
++        const uint8_t * qs     = base + ibx_offset.first + 32 * (is >> 2);
++        const uint8_t * hm     = base + ibx_offset.second;
++        const uint8_t * scales = base + d_offset.first;
++        const ggml_half d      = *reinterpret_cast<const ggml_half *>(base + d_offset.second);
++
++        const int8_t * q8 = q8_1_quant_ptr + is * QK8_1;
++
++        int sumi = 0;
++#pragma unroll
++        for (int k = 0; k < 8; ++k) {
++            const int l = 4 * k;
++            const int v =
++                ((kv[((qs[l + 0] >> shift) & 3) | (((hm[l + 0] >> is) & 1) << 2)] & 0xFF) <<  0) |
++                ((kv[((qs[l + 1] >> shift) & 3) | (((hm[l + 1] >> is) & 1) << 2)] & 0xFF) <<  8) |
++                ((kv[((qs[l + 2] >> shift) & 3) | (((hm[l + 2] >> is) & 1) << 2)] & 0xFF) << 16) |
++                ((kv[((qs[l + 3] >> shift) & 3) | (((hm[l + 3] >> is) & 1) << 2)] & 0xFF) << 24);
++            sumi = dpct::dp4a(v, get_int_from_int8(q8, k), sumi);
++        }
++        const int   sc = (int)((scales[is >> 1] >> (4 * (is & 1))) & 0xF) - 8;
++        const float dd = (float) d * sc * (*(q8_1_ds + is))[0];
++        return dd * sumi;
++    }
++};
++
+ static inline float vec_dot_q4_K_q8_1_common(const int * __restrict__ q4, const uint16_t * __restrict__ scales,
+                                              const ggml_half2 & dm, const block_q8_1 * __restrict__ bq8_1,
+                                              const int &        iqs) {
+diff --git a/ggml/src/ggml-sycl/dequantize.hpp b/ggml/src/ggml-sycl/dequantize.hpp
+index ca8cd96c0..1386c7b4b 100644
+--- a/ggml/src/ggml-sycl/dequantize.hpp
++++ b/ggml/src/ggml-sycl/dequantize.hpp
+@@ -919,6 +919,88 @@ static void dequantize_block_q3_K_reorder(const void * __restrict__ vx, dst_t *
+ #endif
+ }
+ 
++template<typename dst_t>
++static void dequantize_block_iq3_a770(const void * __restrict__ vx, dst_t * __restrict__ yy,
++                                      const sycl::nd_item<3> &item_ct1) {
++    // Codebook-free 3-bit (A770). Same qs/hmask bit-packing as Q3_K, but 8 sub-blocks
++    // of 32 with 4-bit signed scales (nibble-8), and a non-uniform 8-entry LUT
++    // (kvalues_iq3nl): x = d * sc * kv[L], L = (qs 2 low bits) | (hmask high bit << 2).
++    const int64_t i = item_ct1.get_group(2);
++    const block_iq3_a770 * x = (const block_iq3_a770 *) vx;
++    const int8_t * kv = kvalues_iq3nl;
++
++    const int64_t r   = item_ct1.get_local_id(2) / 4;
++    const int64_t tid = r / 2;
++    const int64_t is0 = r % 2;
++    const int64_t l0  = 16 * is0 + 4 * (item_ct1.get_local_id(2) % 4);
++    const int64_t n   = tid / 4;
++    const int64_t j   = tid - 4 * n;
++
++    const uint8_t m     = 1 << (4 * n + j);
++    const int     shift = 2 * j;
++    const int64_t is    = 4 * n + j;   // sub-block of 32 (0..7)
++
++    const int8_t sc    = (int8_t)((x[i].scales[is >> 1] >> (4 * (is & 1))) & 0xF) - 8;
++    const float  d_all = x[i].d;
++    const float  dl    = d_all * sc;
++
++    dst_t * y = yy + i * QK_K + 128 * n + 32 * j;
++    const uint8_t * q  = x[i].qs + 32 * n;
++    const uint8_t * hm = x[i].hmask;
++
++    for (int l = l0; l < l0 + 4; ++l) {
++        const int L = ((q[l] >> shift) & 3) | ((hm[l] & m) ? 4 : 0);
++        y[l] = dl * kv[L];
++    }
++}
++
++// Reorder (SoA) dequant for the GEMM/prefill path once an IQ3_A770 expert tensor has been
++// reordered. Same math as dequantize_block_iq3_a770, reading the [qs][hmask][scales][d] planes.
++template<typename dst_t>
++static void dequantize_block_iq3_a770_reorder(const void * __restrict__ vx, dst_t * __restrict__ yy,
++                                              const sycl::nd_item<3> & item_ct1, int64_t n_blocks) {
++    const int64_t i = item_ct1.get_group(2);
++    if (i >= n_blocks) {
++        return;
++    }
++
++    const uint8_t * base          = static_cast<const uint8_t *>(vx);
++    const size_t    qs_offset     = i * (QK_K / 4);
++    const size_t    hmask_offset  = n_blocks * (QK_K / 4) + i * (QK_K / 8);
++    const size_t    scales_offset = n_blocks * (QK_K / 4) + n_blocks * (QK_K / 8) + i * 4;
++    const size_t    d_offset      = n_blocks * (QK_K / 4) + n_blocks * (QK_K / 8) + n_blocks * 4 +
++                                    i * sizeof(ggml_half);
++
++    const uint8_t * qs     = base + qs_offset;
++    const uint8_t * hmask  = base + hmask_offset;
++    const uint8_t * scales = base + scales_offset;
++    const float     d_all  = static_cast<float>(*reinterpret_cast<const ggml_half *>(base + d_offset));
++    const int8_t  * kv     = kvalues_iq3nl;
++
++    const int64_t r   = item_ct1.get_local_id(2) / 4;
++    const int64_t tid = r / 2;
++    const int64_t is0 = r % 2;
++    const int64_t l0  = 16 * is0 + 4 * (item_ct1.get_local_id(2) % 4);
++    const int64_t n   = tid / 4;
++    const int64_t j   = tid - 4 * n;
++
++    const uint8_t m     = 1 << (4 * n + j);
++    const int     shift = 2 * j;
++    const int64_t is    = 4 * n + j;
++
++    const int8_t sc    = (int8_t)((scales[is >> 1] >> (4 * (is & 1))) & 0xF) - 8;
++    const float  dl    = d_all * sc;
++
++    dst_t * y = yy + i * QK_K + 128 * n + 32 * j;
++    const uint8_t * q  = qs + 32 * n;
++    const uint8_t * hm = hmask;
++
++    for (int l = l0; l < l0 + 4; ++l) {
++        const int L = ((q[l] >> shift) & 3) | ((hm[l] & m) ? 4 : 0);
++        y[l] = dl * kv[L];
++    }
++}
++
+ #if QK_K == 256
+ static inline void get_scale_min_k4(int j, const uint8_t * q, uint8_t & d, uint8_t & m) {
+     if (j < 4) {
+
+diff --git a/ggml/src/ggml-sycl/convert.cpp b/ggml/src/ggml-sycl/convert.cpp
+index 65593402e..e6c90c77d 100644
+--- a/ggml/src/ggml-sycl/convert.cpp
++++ b/ggml/src/ggml-sycl/convert.cpp
+@@ -120,6 +120,30 @@ static void dequantize_row_q3_K_sycl_reorder(const void *vx, dst_t *y, const int
+         });
+ }
+ 
++template <typename dst_t>
++static void dequantize_row_iq3_a770_sycl(const void *vx, dst_t *y, const int64_t k,
++                                         dpct::queue_ptr stream) {
++    const int64_t nb = k / QK_K;
++    dpct::has_capability_or_fail(stream->get_device(), { sycl::aspect::fp16 });
++    stream->parallel_for(
++        sycl::nd_range<3>(sycl::range<3>(1, 1, nb) * sycl::range<3>(1, 1, 64), sycl::range<3>(1, 1, 64)),
++        [=](sycl::nd_item<3> item_ct1) {
++            dequantize_block_iq3_a770(vx, y, item_ct1);
++        });
++}
++
++template <typename dst_t>
++static void dequantize_row_iq3_a770_sycl_reorder(const void *vx, dst_t *y, const int64_t k,
++                                                 dpct::queue_ptr stream) {
++    const int64_t nb = k / QK_K;
++    dpct::has_capability_or_fail(stream->get_device(), { sycl::aspect::fp16 });
++    stream->parallel_for(
++        sycl::nd_range<3>(sycl::range<3>(1, 1, nb) * sycl::range<3>(1, 1, 64), sycl::range<3>(1, 1, 64)),
++        [=](sycl::nd_item<3> item_ct1) {
++            dequantize_block_iq3_a770_reorder(vx, y, item_ct1, nb);
++        });
++}
++
+ template <typename dst_t>
+ static void dequantize_row_q4_0_sycl(const void *vx, dst_t *y, const int64_t k,
+                                      dpct::queue_ptr stream) {
+@@ -670,6 +694,12 @@ to_fp16_sycl_t ggml_get_to_fp16_sycl(ggml_type type, ggml_tensor * dst) {
+             } else {
+                 return dequantize_row_q3_K_sycl;
+             }
++        case GGML_TYPE_IQ3_A770:
++            if (dst->src[0]->extra && ((ggml_tensor_extra_gpu *) dst->src[0]->extra)->optimized_feature.reorder) {
++                return dequantize_row_iq3_a770_sycl_reorder;
++            } else {
++                return dequantize_row_iq3_a770_sycl;
++            }
+         case GGML_TYPE_Q4_K:
+             if (dst->src[0]->extra && ((ggml_tensor_extra_gpu *) dst->src[0]->extra)->optimized_feature.reorder) {
+                 return dequantize_row_q4_K_sycl_reorder;
+@@ -752,6 +782,12 @@ to_fp32_sycl_t ggml_get_to_fp32_sycl(ggml_type type, ggml_tensor *dst) {
+             } else {
+                 return dequantize_row_q3_K_sycl;
+             }
++        case GGML_TYPE_IQ3_A770:
++            if (dst->src[0]->extra && ((ggml_tensor_extra_gpu *) dst->src[0]->extra)->optimized_feature.reorder) {
++                return dequantize_row_iq3_a770_sycl_reorder;
++            } else {
++                return dequantize_row_iq3_a770_sycl;
++            }
+         case GGML_TYPE_Q4_K:
+             if (dst->src[0]->extra &&
+                 ((ggml_tensor_extra_gpu*)dst->src[0]->extra)->optimized_feature.reorder) {
+
+diff --git a/ggml/src/ggml-sycl/mmvq.cpp b/ggml/src/ggml-sycl/mmvq.cpp
+index 26176037f..c51d3ac5d 100644
+--- a/ggml/src/ggml-sycl/mmvq.cpp
++++ b/ggml/src/ggml-sycl/mmvq.cpp
+@@ -2567,19 +2801,46 @@ bool ggml_sycl_mul_mat_vec_q_id_reorder(
+     size_t             dst_row_stride,
+     size_t             src1_row_stride,
+     dpct::queue_ptr    stream) {
++    const bool use_nx2_specialize =
++        g_ggml_sycl_enable_moe_nx2_specialize && ncols == 2048 && nrows == 512 && n_experts_used == 8;
++
+     switch (src0_type) {
+         case GGML_TYPE_Q4_K:
+-            launch_mul_mat_vec_q_moe_reorder<reorder_vec_dot_q_sycl<GGML_TYPE_Q4_K>>(
+-                vx_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
+-                expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++            if (use_nx2_specialize) {
++                launch_mul_mat_vec_q_moe_reorder_nx2<reorder_vec_dot_q_sycl<GGML_TYPE_Q4_K>>(
++                    vx_base, vy, ids_dev, dst_base, n_experts_used,
++                    expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++            } else {
++                launch_mul_mat_vec_q_moe_reorder<reorder_vec_dot_q_sycl<GGML_TYPE_Q4_K>>(
++                    vx_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
++                    expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++            }
+             return true;
+         case GGML_TYPE_Q5_K:
+-            launch_mul_mat_vec_q_moe_reorder<reorder_vec_dot_q_sycl<GGML_TYPE_Q5_K>>(
+-                vx_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
+-                expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++            if (use_nx2_specialize) {
++                launch_mul_mat_vec_q_moe_reorder_nx2<reorder_vec_dot_q_sycl<GGML_TYPE_Q5_K>>(
++                    vx_base, vy, ids_dev, dst_base, n_experts_used,
++                    expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++            } else {
++                launch_mul_mat_vec_q_moe_reorder<reorder_vec_dot_q_sycl<GGML_TYPE_Q5_K>>(
++                    vx_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
++                    expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++            }
+             return true;
+         case GGML_TYPE_Q6_K:
+-            launch_mul_mat_vec_q_moe_reorder<reorder_vec_dot_q_sycl<GGML_TYPE_Q6_K>>(
++            if (g_ggml_sycl_enable_moe_q6_down_nx2_specialize &&
++                ncols == 512 && nrows == 2048 && n_experts_used == 8) {
++                launch_mul_mat_vec_q_moe_reorder_nx2_down_q6<reorder_vec_dot_q_sycl<GGML_TYPE_Q6_K>>(
++                    vx_base, vy, ids_dev, dst_base, n_experts_used,
++                    expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++            } else {
++                launch_mul_mat_vec_q_moe_reorder<reorder_vec_dot_q_sycl<GGML_TYPE_Q6_K>>(
++                    vx_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
++                    expert_weight_stride, dst_row_stride, src1_row_stride, stream);
++            }
++            return true;
++        case GGML_TYPE_IQ3_A770:
++            launch_mul_mat_vec_q_moe_reorder<reorder_vec_dot_q_sycl<GGML_TYPE_IQ3_A770>>(
+                 vx_base, vy, ids_dev, dst_base, ncols, nrows, n_experts_used,
+                 expert_weight_stride, dst_row_stride, src1_row_stride, stream);
+             return true;
+diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
+index 7baa083..1fa4868 100644
+--- a/ggml/src/ggml-sycl/ggml-sycl.cpp
++++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
+@@ -530,7 +530,8 @@ ggml_backend_sycl_buffer_init_tensor(ggml_backend_buffer_t buffer,
+             case GGML_TYPE_Q4_0:
+             case GGML_TYPE_Q8_0:
+             case GGML_TYPE_Q4_K:
+-            case GGML_TYPE_Q6_K:{
++            case GGML_TYPE_Q6_K:
++            case GGML_TYPE_IQ3_A770:{
+                 ggml_tensor_extra_gpu * extra = new ggml_tensor_extra_gpu{};
+                 tensor->extra                 = extra;
+                 ctx->tensor_extras.push_back(extra);
+@@ -3985,6 +3986,57 @@ static bool reorder_qw_q6_k_moe(uint8_t * data_device, size_t expert_bytes, int6
+     return true;
+ }
+ 
++// MoE counterpart for IQ3_A770: scatter every block of every expert into its per-expert self-contained
++// SoA ([qs][hmask][scales][d]). Same atomic temp-buffer contract as reorder_qw_q6_k_moe. The plane
++// order/sizes must match block_q_t<IQ3_A770> and dequantize_block_iq3_a770_reorder exactly.
++static bool reorder_qw_iq3_a770_moe(uint8_t * data_device, size_t expert_bytes, int64_t n_expert, dpct::queue_ptr stream) {
++    GGML_ASSERT(expert_bytes % sizeof(block_iq3_a770) == 0);
++    const int    blocks_per_expert = (int) (expert_bytes / sizeof(block_iq3_a770));
++    const size_t total_bytes       = expert_bytes * (size_t) n_expert;
++
++    sycl_reorder_temp_buffer tmp(stream, total_bytes);
++    if (!tmp) {
++        GGML_LOG_WARN("%s: failed to allocate %zu bytes for reorder temp buffer, skipping reorder\n", __func__, total_bytes);
++        return false;
++    }
++    uint8_t * tmp_buf = static_cast<uint8_t *>(tmp.ptr);
++
++    sycl::event copy_event;
++    SYCL_CHECK(CHECK_TRY_ERROR(copy_event = stream->memcpy(tmp_buf, data_device, total_bytes)));
++    if (!g_ggml_sycl_use_async_mem_op) {
++        copy_event.wait();
++    }
++
++    const int total_blocks = blocks_per_expert * (int) n_expert;
++    auto reorder_event = stream->parallel_for(total_blocks, [=](auto gb_) {
++        const int              gb   = gb_;
++        const int              e    = gb / blocks_per_expert;
++        const int              ib   = gb % blocks_per_expert;
++        const block_iq3_a770 * x    = (const block_iq3_a770 *) (tmp_buf + (size_t) e * expert_bytes);
++        uint8_t *              base = data_device + (size_t) e * expert_bytes;
++
++        auto * qs_ptr     = base;
++        auto * hmask_ptr  = qs_ptr + (QK_K / 4) * blocks_per_expert;
++        auto * scales_ptr = hmask_ptr + (QK_K / 8) * blocks_per_expert;
++        auto * d_ptr      = (sycl::half *) (scales_ptr + 4 * blocks_per_expert);
++
++        for (int j = 0; j < QK_K / 4; ++j) {
++            qs_ptr[ib * (QK_K / 4) + j] = x[ib].qs[j];
++        }
++        for (int j = 0; j < QK_K / 8; ++j) {
++            hmask_ptr[ib * (QK_K / 8) + j] = x[ib].hmask[j];
++        }
++        for (int j = 0; j < 4; ++j) {
++            scales_ptr[ib * 4 + j] = x[ib].scales[j];
++        }
++        d_ptr[ib] = x[ib].d;
++    });
++    if (!g_ggml_sycl_use_async_mem_op) {
++        reorder_event.wait_and_throw();
++    }
++    return true;
++}
++
+ static bool reorder_qw_q3_k(uint8_t * data_device, size_t size, size_t offset, dpct::queue_ptr stream) {
+     GGML_ASSERT(size % sizeof(block_q3_K) == 0);
+     GGML_ASSERT(offset % sizeof(block_q3_K) == 0);
+@@ -4153,8 +4205,10 @@ static bool reorder_qw(const ggml_tensor * src0, dpct::queue_ptr stream) {
+                 return reorder_qw_q5_k_moe(data_device, src0->nb[2], src0->ne[2], stream);
+             case GGML_TYPE_Q6_K:
+                 return reorder_qw_q6_k_moe(data_device, src0->nb[2], src0->ne[2], stream);
++            case GGML_TYPE_IQ3_A770:
++                return reorder_qw_iq3_a770_moe(data_device, src0->nb[2], src0->ne[2], stream);
+             default:
+-                GGML_ABORT("reorder_qw(): MoE reorder only supports Q4_K, Q5_K and Q6_K");
++                GGML_ABORT("reorder_qw(): MoE reorder only supports Q4_K, Q5_K, Q6_K and IQ3_A770");
+         }
+     }
+ 
+@@ -4221,15 +4275,16 @@ static void opt_for_reorder(ggml_backend_sycl_context * ctx, const ggml_tensor *
+ }
+ 
+ // MoE counterpart of opt_for_reorder: lazily reorder an expert-weight tensor (3D, per-expert SoA)
+-// the first time the fused MoE GEMV runs on it. Limited to Q4_K, Q5_K and Q6_K - the types with
+-// reorder read variants across every prefill and decode sub-path (fused GEMV, dense mmvq, DMMV, and
+-// the dequant-to-fp16/fp32 GEMM path); reordering a type without full coverage would corrupt a
++// the first time the fused MoE GEMV runs on it. Limited to Q4_K, Q5_K, Q6_K and IQ3_A770 - the types
++// with reorder read variants across every prefill and decode sub-path (fused GEMV, dense mmvq, DMMV,
++// and the dequant-to-fp16/fp32 GEMM path); reordering a type without full coverage would corrupt a
+ // fallback read.
+ static void opt_for_reorder_id(ggml_backend_sycl_context * ctx, const ggml_tensor * src0) {
+     if (g_ggml_sycl_disable_optimize || !ctx->opt_feature.reorder) {
+         return;
+     }
+-    if (src0->type != GGML_TYPE_Q4_K && src0->type != GGML_TYPE_Q5_K && src0->type != GGML_TYPE_Q6_K) {
++    if (src0->type != GGML_TYPE_Q4_K && src0->type != GGML_TYPE_Q5_K &&
++        src0->type != GGML_TYPE_Q6_K && src0->type != GGML_TYPE_IQ3_A770) {
+         return;
+     }
+     ggml_tensor_extra_gpu * extra = static_cast<ggml_tensor_extra_gpu *>(src0->extra);

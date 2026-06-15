@@ -1,0 +1,5 @@
+cell,k_q4k_layers,size_GiB,mean_KLD,top1_pct,ppl_ratio
+q3floor_q4top8,8,14.48,0.066376,89.082,1.018098
+q3floor_q4top16,16,14.74,0.064206,89.247,1.017802
+q3floor_q4top24,24,15.01,0.062362,89.545,1.016736
+q3floor_q4top32,32,15.27,0.059634,89.682,1.018297
