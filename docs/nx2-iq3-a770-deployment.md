@@ -1,20 +1,26 @@
 # NX2-IQ3_A770 — single-card & two-card deployment
 
 Nex-N2-mini (`qwen35moe`: ~34.7 B total / ~A3B active, 256 experts, hybrid
-linear-attention) packaged as **one model, two residency points** selected by `--sm`.
-Launcher: [`../serving/run-nx2.sh`](../serving/run-nx2.sh).
+linear-attention) packaged as **one GGUF, two residency points** selected by `--sm`.
+A single multi-precision file (`NX2-IQ3_A770-dual.gguf`) carries both expert sets; the
+loader (patch `0010`) resolves it to one variant at load and reads only that variant's
+tensor data. Launcher: [`../serving/run-nx2.sh`](../serving/run-nx2.sh).
 
 ## TL;DR
 
-| `--sm` | GPUs | file | experts | size | path | decode |
+| `--sm` | GPUs | variant | experts | resident | path | decode |
 |---|---|---|---|---|---|---|
-| **off** | 1× 16 GB | `NX2-IQ3_A770` | 3.19 bpw (codebook-free LUT) | ~15.0 GiB | fused reorder dp4a (0007/0008) | **~82 t/s** (B70, measured) |
-| **on** | 2× 16 GB | `NX2-Q4_K` | 4.5 bpw | ~18.8 GiB | Q4_K reorder, `-sm layer -ts 1,1` | bandwidth-projected (see below) |
+| **off** | 1× 16 GB | 0 (default) | IQ3_A770 3.19 bpw (codebook-free LUT) | ~15.0 GiB | fused reorder dp4a (0007/0008) | **~82 t/s** (B70, measured) |
+| **on** | 2× 16 GB | 1 (`--override-kv`) | Q4_K 4.5 bpw | ~18.8 GiB | Q4_K reorder, `-sm layer -ts 1,1` | bandwidth-projected (see below) |
+
+One file on disk (~34 GiB); each mode loads only its variant's experts (the loader drops
+the sibling set before allocation), so VRAM is the "resident" column, not the file size.
 
 ```bash
 serving/run-nx2.sh --sm auto    # detects GPU count; off=1-card IQ3, on=2-card Q4_K
 serving/run-nx2.sh --sm off -- -p "The capital of France is" -n 16   # force 1-card
 NX2_TOOL=llama-server serving/run-nx2.sh --sm on --port 8080         # force 2-card
+# under the hood, --sm on adds:  --override-kv general.tensor_variant.default=int:1
 ```
 
 ## Why two precisions — the bits-vs-bandwidth lever
@@ -40,6 +46,13 @@ once. **Q4_K (4.5) sits in the win zone** — that's why the 2-card fill is 4-bi
 - **2-card Q4_K:** the existing Q4_K MoE reorder (the B70-Turbo chain, `0001`/`0004`) under
   `-sm layer`, which runs whole layers per device so the per-device reorder/fusion stays
   intact. **Zero IQ3-specific kernel work** — it's a standard Q4_K_M-class build.
+- **Single-file hot-swap:** patch `0010` (`select_tensor_variant`) lets one GGUF ship both
+  expert sets — canonical IQ3 plus a `<name>.v1` Q4_K sibling per expert tensor. At load the
+  loader keeps the variant named by `general.tensor_variant.default` (overridable with
+  `--override-kv …=int:1`), renames it to the canonical name, and drops the rest **before**
+  tensor creation, so the rest of llama.cpp sees an ordinary single-precision model and only
+  the selected variant's bytes are read. No-op when the key is absent → upstream models are
+  unaffected. Build the file with [`../scripts/merge-tensor-variants.py`](../scripts/merge-tensor-variants.py).
 
 ## Quality (final eval — KLD vs `NX2-Q6K.kld`, wikitext-2, 100×512 tok)
 
@@ -64,16 +77,24 @@ switch. Raw logs: [`../results/nx2-final-eval/`](../results/nx2-final-eval/).
   measured** — only a single dev card is available here. Validate on real 2-GPU hardware
   with the handoff harness ([`../eval/nx2/run_tensor_split_claim.sh`](../eval/nx2/run_tensor_split_claim.sh)
   pattern); the bandwidth table above predicts the split is decode-positive at 4.5 bpw.
+- **Single-file loader (`0010`): both variants load+generate from the one `dual.gguf`.**
+  Variant 0 (IQ3) on GPU and variant 1 (Q4_K, via `--override-kv …=int:1`) on CPU each
+  produced coherent output with **no integrity error** — confirming the loader drops the
+  unselected sibling set (854 → 734 tensors) before allocation rather than loading both. The
+  `select_tensor_variant` log shows `selected tensor variant N; 120 groups, dropped 120
+  sibling tensors`, and the override path logs `validate_override … = 1` first.
 
 ## HuggingFace layout (one repo = "one upload")
 
 ```
-NX2-IQ3_A770.gguf     # 1-card, 15 GiB   (rename of NX2-IQ3_A770-mixed-LUT.gguf)
-NX2-Q4_K.gguf         # 2-card, 18.8 GiB (rename of NX2-IQ3_A770-Q4fill.gguf)
-run-nx2.sh            # the --sm switch
-mmproj-f16.gguf       # vision tower (optional, separate from the text budget)
+NX2-IQ3_A770-dual.gguf  # ONE file, ~34 GiB — both precisions; --sm picks the variant
+run-nx2.sh              # the --sm switch (adds --override-kv for variant 1)
+mmproj-f16.gguf         # vision tower (optional, separate from the text budget)
 ```
 
-A true single-file in-engine `--sm` toggle (one GGUF carrying both precisions, loader
-swaps experts by device count) is a deeper llama.cpp change; the launcher + two-file repo
-delivers the same one-command convenience today.
+The single-file in-engine `--sm` toggle is real (patch `0010`): one GGUF carries both
+precisions and the loader swaps variants by a metadata key, so a user downloads one file and
+flips `--sm` to trade card-count for accuracy. No second download, no re-quantize.
+(Prefer two separate files — 15 GiB IQ3 + 18.8 GiB Q4_K — to save the ~15 GiB of unused bytes
+per mode on disk? `merge-tensor-variants.py`'s inputs are exactly those two files; ship them
+instead and drop `--override-kv`. The single file is the convenience default.)

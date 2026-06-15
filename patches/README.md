@@ -34,6 +34,9 @@ A770-only patches start after the retained Turbo chain:
 0008 exact MoE fused gate/up path  (LANDED in wip/ - fused gate/up+SwiGLU, tg 79.0->82.0 t/s +3.8%; branch a770-iq3-swiglu)
 0009 tensor policy + quant ftype  (dedicated LLAMA_FTYPE_MOSTLY_IQ3_A770 + Policy C LANDED in wip/; L2 asym-down deferred)
      -> usage: llama-quantize --imatrix NX2.imatrix NX2-bf16.gguf out.gguf iq3_a770   (experts->IQ3_A770, rest->Q6_K)
+0010 multi-precision tensor variant loader  (LANDED in wip/ - one GGUF, both precisions; --sm hot-swaps variant. Generic, upstream-safe)
+     -> build:  scripts/merge-tensor-variants.py --base IQ3.gguf --variant Q4_K.gguf --out dual.gguf
+     -> select: --override-kv general.tensor_variant.default=int:1   (default 0 = canonical IQ3)
 ```
 
 **`0005` (landed):** `block_iq3_a770` — a codebook-free 3-bit quant using Q3_K's
