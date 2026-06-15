@@ -1,0 +1,27 @@
+Nex-N2-mini — Turbo Phase Twin
+GGUF quantizations of nex-agi/Nex-N2-mini for Intel Arc (SYCL).
+
+This work is licensed under the Apache License, Version 2.0 (the "License").
+You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+
+Attribution chain (Apache-2.0 §4(b)):
+
+  - Base model: Nex-N2-mini  © Nex-AGI  (Apache-2.0)
+        https://huggingface.co/nex-agi/Nex-N2-mini
+  - Post-trained on: Qwen3.5-35B-A3B-Base  © Qwen Team / Alibaba Cloud  (Apache-2.0)
+        https://huggingface.co/Qwen/Qwen3.5-35B-A3B-Base
+  - These files are quantizations of the above (GGUF + importance matrix; codebook-free
+    IQ3_A770 and Q4_K experts packed as a dual-variant "twin" GGUF; Q6_K non-experts).
+    No other modifications to the weights.
+
+Tooling:
+  - llama.cpp  © 2023-2026 The ggml authors  (MIT License)
+        https://github.com/ggml-org/llama.cpp
+    The included patch (build/llama.cpp-turbo-phase-twin.patch) is a derivative of llama.cpp
+    and is likewise offered under the MIT License.
+
+Independent community quantization. The names identify the upstream work and do not imply
+endorsement by Nex-AGI, the Qwen Team, or the ggml authors.
+
+Full methodology and reproducible benchmarks:
+  https://github.com/newjordan/NexN2-B70-Turbo
