@@ -180,6 +180,10 @@ llama-cli -m Nex-N2-mini-Turbo-Phase-Twin.gguf \
 writes a plain single-precision GGUF — so you can shrink the 34 GiB file to exactly what your
 card needs and drop the unused bytes. `budget_mb` absent/`0` → ordinary `--sm` behavior.
 
+> The in-engine `--override-kv budget_mb` path needs no Python. The *autoprune* tool reads the
+> file with this project's IQ3_A770-aware `gguf-py` (the one your `build.sh` patched) — if it
+> isn't at `~/llama.cpp`, point at it: `LLAMA_CPP=/path/to/llama.cpp ./install-nx2.sh`.
+
 ## Files
 
 | file | what |

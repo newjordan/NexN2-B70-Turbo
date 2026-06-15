@@ -19,6 +19,15 @@ import gguf
 from gguf import GGUFReader, GGUFWriter
 from tqdm import tqdm
 
+# The dual carries IQ3_A770 (ggml type 42) tensors; reading them needs the IQ3_A770-aware gguf-py
+# from this project's patched llama.cpp (the build patch registers it). A stock pip `gguf` will
+# choke on type 42 with a cryptic enum error, so fail early with a clear pointer.
+if not hasattr(gguf.GGMLQuantizationType, "IQ3_A770"):
+    sys.exit("error: the imported gguf-py does not know IQ3_A770 (ggml type 42).\n"
+             "Point at the patched gguf-py built from this project, e.g.:\n"
+             "  LLAMA_CPP=/path/to/llama.cpp python prune-dual.py ...\n"
+             "(build.sh clones+patches llama.cpp; its gguf-py is IQ3_A770-aware.)")
+
 RE_SIB = re.compile(r"^(.+)\.v([1-9][0-9]*)$")
 TV_KEYS = ("general.tensor_variant.count", "general.tensor_variant.default",
            "general.tensor_variant.budget_mb", "general.tensor_variant.promote_order")
