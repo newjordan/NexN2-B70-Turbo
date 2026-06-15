@@ -71,7 +71,10 @@ switch. Raw logs: [`../results/nx2-final-eval/`](../results/nx2-final-eval/).
 
 - **1-card path: fully validated on Intel Arc Pro B70 (Battlemage, A770-proxy).** Every
   throughput claim is a back-to-back same-build A/B (e.g. 0007: 43.7→78.6 t/s at matched pp;
-  0008: 79.0→82.0). End-to-end coherent generation. KLD as above.
+  0008: 79.0→82.0). End-to-end coherent generation. KLD as above. The whole reorder stack vs
+  its dormant fallback was re-measured **same-binary** (env-gated, no rebuild between arms):
+  **tg 43.71 → 82.3 t/s, +88%**, at matched pp512 (~600, spread 0.09%), reproducible to 0.2%,
+  ±0.05 error bars — [`../results/init-tensor-ab/`](../results/init-tensor-ab/).
 - **2-card path: accuracy is real** (measured on CPU — device-count-independent), and the
   kernels are the production-tested Q4_K reorder. **Throughput is bandwidth-*projected*, not
   measured** — only a single dev card is available here. Validate on real 2-GPU hardware
