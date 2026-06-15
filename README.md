@@ -107,6 +107,18 @@ cmake -B build -DGGML_SYCL=ON -DGGML_SYCL_F16=ON -DCMAKE_CXX_COMPILER=icpx
 cmake --build build -j
 ```
 
+**Reasoning/`<think>` parsing fix** — apply on a base that has upstream's PEG chat auto-parser
+(e.g. the `f0156d140` base the Turbo Phase Twin build pins):
+
+```bash
+git apply /path/to/NexN2-B70-Turbo/patches/chat-forced-open-reasoning-leak.patch
+```
+
+Without it, Nex-N2-mini's forced-open bare `<think>` template makes the server emit the reasoning
+trace inside `message.content` instead of `message.reasoning_content` — the thinking shows up
+inline in the answer. Backend-agnostic, independent of the SYCL chain, and already folded into the
+Turbo Phase Twin combined patch. See [`patches/README.md`](patches/README.md).
+
 ## Reproduce the frontier
 
 ```bash
