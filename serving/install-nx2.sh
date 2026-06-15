@@ -15,6 +15,12 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 PY="${PY:-$(command -v python3)}"
+# locate prune-dual.py for either layout: meta-repo (scripts/) or flat HF package (alongside)
+PRUNE=""
+for c in "$ROOT/scripts/prune-dual.py" "$HERE/scripts/prune-dual.py" "$HERE/prune-dual.py"; do
+  [ -f "$c" ] && { PRUNE="$c"; break; }
+done
+[ -z "$PRUNE" ] && { echo "prune-dual.py not found next to this script" >&2; exit 1; }
 DUAL="${NX2_DUAL:-}"
 OUT=""
 VRAM_GIB=""
@@ -30,7 +36,7 @@ while [ $# -gt 0 ]; do
     --dual)       DUAL="$2"; shift 2;;
     --out)        OUT="$2"; shift 2;;
     --keep-dual)  KEEP_DUAL=1; shift;;
-    -h|--help)    sed -n '2,18p' "$0"; exit 0;;
+    -h|--help)    sed -n '2,13p' "$0"; exit 0;;
     *) echo "unknown arg: $1" >&2; exit 2;;
   esac
 done
@@ -85,7 +91,7 @@ fi
 echo "[install] dual model: $DUAL"
 
 # ---- 3. compute the fit & report what we'll get ----------------------------
-"$PY" "$ROOT/scripts/prune-dual.py" --dual "$DUAL" --vram-gib "$VRAM_GIB" \
+"$PY" "$PRUNE" --dual "$DUAL" --vram-gib "$VRAM_GIB" \
       --reserve-gib "$RESERVE_GIB" --out /dev/null --dry-run || exit 1
 
 # ---- 4. fit: autoprune (default) or keep the elastic dual ------------------
@@ -103,7 +109,7 @@ EOF
 else
   [ -z "$OUT" ] && OUT="${DUAL%/*}/NX2-fitted-${VRAM_GIB%.*}g.gguf"
   echo "[install] autopruning -> $OUT"
-  "$PY" "$ROOT/scripts/prune-dual.py" --dual "$DUAL" --vram-gib "$VRAM_GIB" \
+  "$PY" "$PRUNE" --dual "$DUAL" --vram-gib "$VRAM_GIB" \
         --reserve-gib "$RESERVE_GIB" --out "$OUT" || exit 1
   if [ "$DUAL" != "$OUT" ]; then
     echo "[install] removing the excess dual ($(du -h "$DUAL" | cut -f1)): $DUAL"
