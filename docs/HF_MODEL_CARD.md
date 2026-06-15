@@ -24,9 +24,9 @@ tags:
 
 # NexN2 B70 Turbo — Nex-N2-mini GGUF
 
-GGUF + importance-matrix quantizations of **[nex-agi/Nex-N2-mini](https://huggingface.co/nex-agi/Nex-N2-mini)** (Qwen3.5-35B-A3B MoE, ~3B active, multimodal reasoning), tuned and measured for fast **local** inference on the **Intel Arc Pro B70** (Battlemage) via llama.cpp's SYCL backend.
+GGUF + importance-matrix quantizations of **[Nex-N2-mini](https://huggingface.co/nex-agi/Nex-N2-mini)** — the Qwen3.5-35B-A3B MoE (~3B active, multimodal reasoning) **by the [Nex-AGI](https://nex-agi.com) team** — tuned and measured for fast **local** inference on the **Intel Arc Pro B70** (Battlemage) via llama.cpp's SYCL backend.
 
-An independent community quantization. The base model is **© Nex-AGI** (Apache-2.0), post-trained on **Qwen3.5-35B-A3B-Base © Qwen Team** (Apache-2.0); these quants are redistributed under Apache-2.0 and the names identify the upstream work.
+**The model is [Nex-N2-mini](https://huggingface.co/nex-agi/Nex-N2-mini), built by the [Nex-AGI](https://nex-agi.com) team** — the reasoning, multimodal capability, and training are entirely theirs; this is an independent community quantization that only repackages their model to run fast on Intel Arc, with sincere thanks to Nex-AGI for releasing it openly. The base model is **© Nex-AGI** (Apache-2.0), post-trained on **Qwen3.5-35B-A3B-Base © Qwen Team** (Apache-2.0); these quants are redistributed under Apache-2.0 and the names identify the upstream work.
 
 Code, kernel patch, full methodology, and reproducible benchmarks: **https://github.com/newjordan/NexN2-B70-Turbo**
 
@@ -96,6 +96,8 @@ OpenAI-compatible endpoint at `http://127.0.0.1:8090/v1`. **Nex-N2-mini is a rea
 - The weights are quantizations of the original; no other modifications.
 
 ## License & attribution
+
+⭐ **Built on [Nex-N2-mini](https://huggingface.co/nex-agi/Nex-N2-mini) by the [Nex-AGI](https://nex-agi.com) team** — their model, their intelligence; this project only quantizes it for Intel Arc. → [nex-agi.com](https://nex-agi.com) · [GitHub](https://github.com/nex-agi/Nex-N2) · [HuggingFace](https://huggingface.co/nex-agi)
 
 Released under the **Apache License 2.0**, inherited from the base model. Retain the attribution above. See [`NOTICE`](https://github.com/newjordan/NexN2-B70-Turbo/blob/main/NOTICE) for the full attribution chain (Qwen → Nex-AGI → these quants; plus llama.cpp / MIT).
 
