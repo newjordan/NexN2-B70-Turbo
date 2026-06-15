@@ -27,8 +27,8 @@
 # Env overrides: NX2_MODELS, NX2_BIN, NX2_MODEL, NX2_TOOL, NX2_NGL
 set -euo pipefail
 
-MODELS="${NX2_MODELS:-/home/frosty40/models/nex-n2-mini}"
-BIN="${NX2_BIN:-/home/frosty40/llama.cpp/build/bin}"
+MODELS="${NX2_MODELS:-$HOME/models/nex-n2-mini}"
+BIN="${NX2_BIN:-$HOME/llama.cpp/build/bin}"
 MODEL="${NX2_MODEL:-$MODELS/NX2-IQ3_A770-dual.gguf}"   # one file, both precisions
 TOOL="${NX2_TOOL:-llama-server}"
 NGL="${NX2_NGL:-99}"

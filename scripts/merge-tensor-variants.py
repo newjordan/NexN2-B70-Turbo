@@ -10,14 +10,14 @@
 # Only tensors whose name contains --pattern (default the MoE experts) are varianted; everything
 # else is shared from --base. Requires the IQ3_A770-aware gguf-py in this tree.
 #
-#   nx2-venv/bin/python scripts/merge-tensor-variants.py \
+#   python scripts/merge-tensor-variants.py \
 #       --base   models/.../NX2-IQ3_A770.gguf \
 #       --variant models/.../NX2-Q4_K.gguf \
 #       --out    models/.../NX2-IQ3_A770-dual.gguf
 import argparse, os, sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "llama.cpp", "gguf-py"))
-sys.path.insert(0, "/home/frosty40/llama.cpp/gguf-py")
+sys.path.insert(0, os.path.join(os.environ.get("LLAMA_CPP", os.path.expanduser("~/llama.cpp")), "gguf-py"))
 import gguf
 from tqdm import tqdm
 
