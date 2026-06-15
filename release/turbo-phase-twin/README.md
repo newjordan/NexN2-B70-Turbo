@@ -156,13 +156,39 @@ renames the survivor to the canonical name — so the rest of llama.cpp sees an 
 single-precision model and only the selected phase's bytes are loaded. No-op on normal
 single-precision GGUFs.
 
+### Elastic: auto-fit *any* VRAM (one command)
+
+`--sm` picks one of two global phases. The same file is also **elastic**: it carries a
+per-tensor importance ranking (`general.tensor_variant.promote_order`), and the loader can
+solve a **VRAM-budget knapsack** — start every expert at IQ3 and promote the most important
+ones to Q4_K, by imatrix-importance-per-byte, until the footprint fits your card. The mix it
+picks sits on a *convex* quality curve: spending an A770's spare ~0.9 GiB of single-card
+headroom closes ~34 % of the IQ3→Q4_K KLD gap, on one card, same kernels, **no re-download**.
+
+```bash
+# elastic at load time — precision dialed to a budget (MiB of weights)
+llama-cli -m Nex-N2-mini-Turbo-Phase-Twin.gguf \
+  --override-kv general.tensor_variant.budget_mb=int:15900 -p "Hello" -n 64
+
+# OR one command: detect VRAM → pick budget → AUTOPRUNE to a single right-sized file
+./install-nx2.sh                 # autodetect
+./install-nx2.sh --vram-gib 16   # force A770 16 GB → ~15.4 GiB fitted model, excess dropped
+./install-nx2.sh --keep-dual     # keep the elastic dual; tune per-run instead
+```
+
+`install-nx2.sh` calls `prune-dual.py`, which runs the **same selection as the loader** and
+writes a plain single-precision GGUF — so you can shrink the 34 GiB file to exactly what your
+card needs and drop the unused bytes. `budget_mb` absent/`0` → ordinary `--sm` behavior.
+
 ## Files
 
 | file | what |
 |---|---|
 | `Nex-N2-mini-Turbo-Phase-Twin.gguf` | the model — both phases, ~34 GiB (loads only the selected phase) |
 | `mmproj-f16.gguf` | vision projector (optional, for multimodal) |
-| `run-nx2.sh` | `--sm` launcher |
+| `run-nx2.sh` | `--sm` launcher (off=1-card IQ3, on=2-card Q4) |
+| `install-nx2.sh` | one-command: detect VRAM → pick budget → autoprune → fitted launcher |
+| `prune-dual.py` | autoprune the dual to a single right-sized GGUF for a VRAM budget |
 | `build/llama.cpp-turbo-phase-twin.patch` | the single build patch (applies on base `f0156d140`) |
 | `build/build.sh` | clone + checkout + apply + build, one command |
 | `build/BUILD.md` | build notes & troubleshooting |
