@@ -27,9 +27,10 @@ tags:
 
 **One file. Two precision phases. Flip `--sm`.**
 
-A single GGUF of **[nex-agi/Nex-N2-mini](https://huggingface.co/nex-agi/Nex-N2-mini)**
-(Qwen3.5-35B-A3B MoE, ~3B active, multimodal reasoning) that carries **two expert
-precisions at once** and hot-swaps between them at load with one flag:
+A single GGUF of **[Nex-N2-mini](https://huggingface.co/nex-agi/Nex-N2-mini)** — the
+Qwen3.5-35B-A3B MoE (~3B active, multimodal reasoning) **by the
+[Nex-AGI](https://nex-agi.com) team** — that carries **two expert precisions at once** and
+hot-swaps between them at load with one flag:
 
 | `--sm` | phase | GPUs | experts | resident | decode (B70) | accuracy |
 |---|---|---|---|---|---:|---|
@@ -181,12 +182,18 @@ single-precision GGUFs.
 
 ## Credits & dependencies
 
-This release stands on others' work. Full text in [`NOTICE`](NOTICE); in brief:
+**This model is [Nex-N2-mini](https://huggingface.co/nex-agi/Nex-N2-mini), built by the
+[Nex-AGI](https://nex-agi.com) team.** The architecture, training, reasoning, and multimodal
+capability are entirely theirs — this project only quantizes their model to run fast on Intel
+Arc. All the intelligence here is Nex-AGI's, and sincere thanks to them for releasing a
+genuinely capable open MoE. Full attribution in [`NOTICE`](NOTICE); the chain in brief:
 
+- ⭐ **[Nex-N2-mini](https://huggingface.co/nex-agi/Nex-N2-mini)** © **Nex-AGI** (Apache-2.0) —
+  **the model these quants are built from**, including the multimodal vision projector shipped
+  here. → [nex-agi.com](https://nex-agi.com) · [GitHub](https://github.com/nex-agi/Nex-N2) ·
+  [HuggingFace](https://huggingface.co/nex-agi)
 - **[Qwen3.5-35B-A3B-Base](https://huggingface.co/Qwen/Qwen3.5-35B-A3B-Base)** © Qwen Team /
-  Alibaba (Apache-2.0) — the foundation model.
-- **[Nex-N2-mini](https://huggingface.co/nex-agi/Nex-N2-mini)** © Nex-AGI (Apache-2.0) — the
-  base model (and the vision projector) these quants are built from.
+  Alibaba (Apache-2.0) — the foundation model Nex-N2-mini was post-trained on.
 - **[llama.cpp / ggml](https://github.com/ggml-org/llama.cpp)** © the ggml authors (MIT) — the
   inference engine, quant framework, and SYCL backend. The included build patch is a
   derivative work of it (kept under MIT).

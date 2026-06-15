@@ -17,12 +17,17 @@ Model lineage and licenses (Apache License 2.0 throughout)
    https://huggingface.co/Qwen/Qwen3.5-35B-A3B-Base
    Nex-N2-mini is post-trained on this base model.
 
-2. Nex-N2-mini — base model for these quants
+2. Nex-N2-mini — THE base model these quants are built from
    Copyright (c) Nex-AGI.
    Licensed under the Apache License, Version 2.0.
    https://huggingface.co/nex-agi/Nex-N2-mini  |  https://nex-agi.com
+   https://github.com/nex-agi/Nex-N2  |  https://huggingface.co/nex-agi
    Post-trained on Qwen3.5-35B-A3B-Base. Includes the vision projector
    (mmproj-f16.gguf) redistributed here.
+   Turbo Phase Twin is ENTIRELY a quantization of Nex-AGI's work: the model, its reasoning
+   and multimodal capabilities, and all of its training are theirs. This project only changes
+   the numeric precision so the model runs fast on Intel Arc. With gratitude to the Nex-AGI
+   team for releasing it openly.
 
 3. Nex-N2-mini — Turbo Phase Twin — quantized derivative (this project's weights)
    Derivative work of Nex-N2-mini, redistributed under the Apache License,
