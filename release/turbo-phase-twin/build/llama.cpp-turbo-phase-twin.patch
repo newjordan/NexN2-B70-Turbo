@@ -6304,7 +6304,7 @@ index b127c5cec..0b3a6b868 100644
 +# them into one RUN, or cmake configure sees --target and errors out.
 +RUN cmake -B build -DGGML_SYCL=ON -DCMAKE_BUILD_TYPE=Release \
 +        -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx
-+RUN cmake --build build -j --target llama-server llama-cli llama-bench
++RUN cmake --build build -j$(nproc) --target llama-server llama-cli llama-bench
  
  RUN mkdir -p /app/lib && \
      find build -name "*.so*" -exec cp -P {} /app/lib \;
