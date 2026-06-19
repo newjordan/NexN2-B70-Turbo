@@ -1,3 +1,27 @@
+diff --git a/.devops/intel.Dockerfile b/.devops/intel.Dockerfile
+index b127c5cec..6eef3758b 100644
+--- a/.devops/intel.Dockerfile
++++ b/.devops/intel.Dockerfile
+@@ -22,13 +22,12 @@ WORKDIR /app
+ 
+ COPY . .
+ 
+-RUN if [ "${GGML_SYCL_F16}" = "ON" ]; then \
+-        echo "GGML_SYCL_F16 is set" \
+-        && export OPT_SYCL_F16="-DGGML_SYCL_F16=ON"; \
+-    fi && \
+-    echo "Building with dynamic libs" && \
+-    cmake -B build -DGGML_NATIVE=OFF -DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DLLAMA_BUILD_TESTS=OFF ${OPT_SYCL_F16} && \
+-    cmake --build build --config Release -j$(nproc)
++# Nex-N2-mini Phase Twin: lean native SYCL build (server/cli/bench).
++# Two RUN layers on purpose (folding them makes cmake configure choke on --target).
++# Build caps jobs at ~70% of cores so it won't starve other services on the host.
++RUN cmake -B build -DGGML_SYCL=ON -DCMAKE_BUILD_TYPE=Release \
++        -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx
++RUN J=$(nproc); cmake --build build -j"$(( J*7/10 > 0 ? J*7/10 : 1 ))" --target llama-server llama-cli llama-bench
+ 
+ RUN mkdir -p /app/lib && \
+     find build -name "*.so*" -exec cp -P {} /app/lib \;
 diff --git a/common/chat-auto-parser-generator.cpp b/common/chat-auto-parser-generator.cpp
 index db3a6cc6f..3e76b88d1 100644
 --- a/common/chat-auto-parser-generator.cpp
@@ -831,7 +855,7 @@ index d80b0a382..d521f5fb8 100644
          case GGML_TYPE_Q6_K:
              if ((ggml_tensor_extra_gpu *) dst->src[0]->extra &&
 diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
-index 3f246e867..430659419 100644
+index 3f246e867..40f56f0a3 100644
 --- a/ggml/src/ggml-sycl/ggml-sycl.cpp
 +++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
 @@ -78,6 +78,20 @@ int g_ggml_sycl_disable_graph = 0;
@@ -1142,7 +1166,7 @@ index 3f246e867..430659419 100644
      switch (src0->type) {
          case GGML_TYPE_Q4_0:
              return reorder_qw_q4_0(data_device, ncols, nrows, size, 0, stream);
-@@ -4010,6 +4274,28 @@ static void opt_for_reorder(ggml_backend_sycl_context * ctx, const ggml_tensor *
+@@ -4010,6 +4274,31 @@ static void opt_for_reorder(ggml_backend_sycl_context * ctx, const ggml_tensor *
      }
  }
  
@@ -1155,6 +1179,9 @@ index 3f246e867..430659419 100644
 +    if (g_ggml_sycl_disable_optimize || !ctx->opt_feature.reorder) {
 +        return;
 +    }
++    // IQ3_A770 reorder is now safe: the per-expert fallback's dense mmvq read path has a reorder
++    // branch (reorder_mul_mat_vec_iq3_a770_q8_1_sycl), so reorder-flagged experts decode correctly
++    // on every request. (Without that coverage, the lazy reorder poisoned reads from request #2 on.)
 +    if (src0->type != GGML_TYPE_Q4_K && src0->type != GGML_TYPE_Q5_K &&
 +        src0->type != GGML_TYPE_Q6_K && src0->type != GGML_TYPE_IQ3_A770) {
 +        return;
@@ -1171,7 +1198,7 @@ index 3f246e867..430659419 100644
  
  static bool can_use_dequantize_mul_mat_vec(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
      // The F16/BF16 qk=1 kernel iterates with stride 2*DMMV_X, requiring ne[0] to be
-@@ -4022,189 +4308,1970 @@ static bool can_use_dequantize_mul_mat_vec(const ggml_tensor * src0, const ggml_
+@@ -4022,189 +4311,1970 @@ static bool can_use_dequantize_mul_mat_vec(const ggml_tensor * src0, const ggml_
  }
  
  static bool can_use_mul_mat_vec_q(const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
@@ -3288,7 +3315,7 @@ index 3f246e867..430659419 100644
  }
  
  // counting sort of the routed rows by expert id (row_id_i, as chosen by the router):
-@@ -4950,6 +7017,8 @@ catch (sycl::exception const &exc) {
+@@ -4950,6 +7020,8 @@ catch (sycl::exception const &exc) {
  
  static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * sycl_ctx, ggml_cgraph * cgraph) {
      ggml_sycl_set_main_device(sycl_ctx->device);
@@ -3297,7 +3324,7 @@ index 3f246e867..430659419 100644
  
      for (int i = 0; i < cgraph->n_nodes; i++) {
          ggml_tensor * node = cgraph->nodes[i];
-@@ -4967,6 +7036,98 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
+@@ -4967,6 +7039,98 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
              }
          }
  #endif
@@ -3396,7 +3423,7 @@ index 3f246e867..430659419 100644
          bool ok = ggml_sycl_compute_forward(*sycl_ctx, node);
          if (!ok) {
              GGML_LOG_ERROR("%s: error: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
-@@ -4976,7 +7137,7 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
+@@ -4976,7 +7140,7 @@ static void ggml_backend_sycl_graph_compute_impl(ggml_backend_sycl_context * syc
  }
  
  #ifdef GGML_SYCL_GRAPH
@@ -3405,7 +3432,7 @@ index 3f246e867..430659419 100644
      if (ggml_sycl_info().device_count > 1) {
          // A sycl_ex::command_graph object can only be created for a single device
          GGML_LOG_INFO("%s: disabling SYCL graphs due to multiple devices\n", __func__);
-@@ -4988,15 +7149,15 @@ static bool check_graph_compatibility(ggml_cgraph * cgraph) {
+@@ -4988,15 +7152,15 @@ static bool check_graph_compatibility(ggml_cgraph * cgraph) {
          switch (node_op) {
              default:
                  break;
@@ -3429,7 +3456,7 @@ index 3f246e867..430659419 100644
                  GGML_LOG_INFO("%s: disabling SYCL graphs due to unsupported node type %s\n", __func__,
                                ggml_op_name(node_op));
                  return false;
-@@ -5022,7 +7183,7 @@ static ggml_status ggml_backend_sycl_graph_compute(ggml_backend_t backend, ggml_
+@@ -5022,7 +7186,7 @@ static ggml_status ggml_backend_sycl_graph_compute(ggml_backend_t backend, ggml_
      auto * sycl_ctx = static_cast<ggml_backend_sycl_context *>(backend->context);
  
  #ifdef GGML_SYCL_GRAPH
@@ -3439,7 +3466,7 @@ index 3f246e867..430659419 100644
          const bool graph_support = dpct::get_device(sycl_ctx->device).has(sycl::aspect::ext_oneapi_limited_graph);
          if (!graph_support) {
 diff --git a/ggml/src/ggml-sycl/mmvq.cpp b/ggml/src/ggml-sycl/mmvq.cpp
-index cf2b59576..9ddfa6fa5 100644
+index cf2b59576..3119d2c1b 100644
 --- a/ggml/src/ggml-sycl/mmvq.cpp
 +++ b/ggml/src/ggml-sycl/mmvq.cpp
 @@ -464,6 +464,54 @@ static void mul_mat_vec_q_iq3_s_q8_1(const void *__restrict__ vx,
@@ -3497,7 +3524,34 @@ index cf2b59576..9ddfa6fa5 100644
  template <int qk, int qi, typename block_q_t, int vdr>
  static void mul_mat_vec_q_iq1_s_q8_1(const void *__restrict__ vx,
                                       const void *__restrict__ vy,
-@@ -1874,6 +1922,29 @@ static void mul_mat_vec_iq3_s_q8_1_sycl(const void *vx, const void *vy,
+@@ -1657,6 +1705,26 @@ static void reorder_mul_mat_vec_q6_k_q8_1_sycl(const void * vx, const void * vy,
+     });
+ }
+ 
++// Dense-reorder GEMV for IQ3_A770 (the per-expert fallback's mmvq read path; closes the reorder
++// coverage gap so reorder-flagged IQ3_A770 experts decode correctly through ggml_sycl_mul_mat).
++static void reorder_mul_mat_vec_iq3_a770_q8_1_sycl(const void * vx, const void * vy, float * dst, const int ncols,
++                                                   const int nrows, dpct::queue_ptr stream) {
++    GGML_ASSERT(ncols % QK_K == 0);
++    constexpr size_t num_subgroups = WARP_SIZE;
++    const int        block_num_y   = ceil_div(nrows, GGML_SYCL_MMV_Y * (int) num_subgroups) * (int) num_subgroups;
++
++    const sycl::range<3> global_size(1, GGML_SYCL_MMV_Y, block_num_y * WARP_SIZE);
++    const sycl::range<3> workgroup_size(1, GGML_SYCL_MMV_Y, num_subgroups * WARP_SIZE);
++
++    stream->submit([&](sycl::handler & cgh) {
++        cgh.parallel_for(sycl::nd_range<3>(global_size, workgroup_size),
++                         [=](sycl::nd_item<3> nd_item) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
++                             mul_mat_vec_q_reorder<reorder_vec_dot_q_sycl<GGML_TYPE_IQ3_A770>>(vx, vy, dst, ncols, nrows,
++                                                                                              nd_item);
++                         });
++    });
++}
++
+ template <int ncols_dst>
+ static void reorder_mul_mat_vec_q6_k_q8_1_sycl_ncols(
+         const void * vx, const void * vy, float * dst,
+@@ -1874,6 +1942,29 @@ static void mul_mat_vec_iq3_s_q8_1_sycl(const void *vx, const void *vy,
      }
  }
  
@@ -3527,17 +3581,22 @@ index cf2b59576..9ddfa6fa5 100644
  static void mul_mat_vec_iq1_s_q8_1_sycl(const void *vx, const void *vy,
                                            float *dst, const int ncols,
                                            const int nrows,
-@@ -2270,6 +2341,9 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
+@@ -2270,6 +2361,14 @@ void ggml_sycl_op_mul_mat_vec_q(ggml_backend_sycl_context & ctx, const ggml_tens
              case GGML_TYPE_IQ3_S:
                  mul_mat_vec_iq3_s_q8_1_sycl(src0_dd_i, src1_ddq_i_bs, dst_dd_i_bs, ne00, row_diff, stream);
                  break;
 +            case GGML_TYPE_IQ3_A770:
-+                mul_mat_vec_iq3_a770_q8_1_sycl(src0_dd_i, src1_ddq_i_bs, dst_dd_i_bs, ne00, row_diff, stream);
++                if ((ggml_tensor_extra_gpu *) dst->src[0]->extra &&
++                    ((ggml_tensor_extra_gpu *) dst->src[0]->extra)->optimized_feature.reorder) {
++                    reorder_mul_mat_vec_iq3_a770_q8_1_sycl(src0_dd_i, src1_ddq_i_bs, dst_dd_i_bs, ne00, row_diff, stream);
++                } else {
++                    mul_mat_vec_iq3_a770_q8_1_sycl(src0_dd_i, src1_ddq_i_bs, dst_dd_i_bs, ne00, row_diff, stream);
++                }
 +                break;
              case GGML_TYPE_IQ4_NL:
                  mul_mat_vec_iq4_nl_q8_1_sycl(src0_dd_i, src1_ddq_i_bs, dst_dd_i_bs, ne00, row_diff, stream);
                  break;
-@@ -2472,3 +2546,1519 @@ bool ggml_sycl_mul_mat_vec_q_id(
+@@ -2472,3 +2571,1519 @@ bool ggml_sycl_mul_mat_vec_q_id(
              return false;
      }
  }
@@ -6284,27 +6343,3 @@ index 000000000..ef6760986
 +    llama_backend_free();
 +    return 0;
 +}
-diff --git a/.devops/intel.Dockerfile b/.devops/intel.Dockerfile
-index b127c5cec..0b3a6b868 100644
---- a/.devops/intel.Dockerfile
-+++ b/.devops/intel.Dockerfile
-@@ -22,13 +22,12 @@ WORKDIR /app
- 
- COPY . .
- 
--RUN if [ "${GGML_SYCL_F16}" = "ON" ]; then \
--        echo "GGML_SYCL_F16 is set" \
--        && export OPT_SYCL_F16="-DGGML_SYCL_F16=ON"; \
--    fi && \
--    echo "Building with dynamic libs" && \
--    cmake -B build -DGGML_NATIVE=OFF -DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DLLAMA_BUILD_TESTS=OFF ${OPT_SYCL_F16} && \
--    cmake --build build --config Release -j$(nproc)
-+# Nex-N2-mini Phase Twin: lean native SYCL build (server/cli/bench).
-+# Two RUN layers on purpose (folding them makes cmake configure choke on --target).
-+# Build caps jobs at ~70% of cores so it won't starve other services on the host.
-+RUN cmake -B build -DGGML_SYCL=ON -DCMAKE_BUILD_TYPE=Release \
-+        -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx
-+RUN J=$(nproc); cmake --build build -j"$(( J*7/10 > 0 ? J*7/10 : 1 ))" --target llama-server llama-cli llama-bench
- 
- RUN mkdir -p /app/lib && \
-     find build -name "*.so*" -exec cp -P {} /app/lib \;

@@ -49,10 +49,13 @@ Run the server (1-card IQ3 default; OpenAI-compatible API on http://localhost:80
 
   docker run --rm -it --device /dev/dri \\
     -v "\$PWD":/models -p 8090:8080 \\
-    $IMAGE -m /models/Nex-N2-mini-Turbo-Phase-Twin.gguf -ngl 99 --jinja
+    $IMAGE -m /models/Nex-N2-mini-Turbo-Phase-Twin.gguf -ngl 99 --jinja \\
+    --cache-ram 0 --ctx-checkpoints 0
 
 (Server listens on the image's default 8080; -p maps it to host 8090 so the built-in
-healthcheck stays green. \$PWD is mounted at /models — run from the folder with the .gguf.)
+healthcheck stays green. \$PWD is mounted at /models — run from the folder with the .gguf.
+--cache-ram 0 --ctx-checkpoints 0 are REQUIRED: this hybrid-attention model goes incoherent
+on turn 2+ if prompt-cache / context-checkpoint restore is left enabled.)
 
 Two Arc cards (Q4 phase, near-lossless) — add these flags to the run:
     -sm layer -ts 1,1 --override-kv general.tensor_variant.default=int:1

@@ -54,8 +54,11 @@ compiler and Intel GPU runtime are baked into the image.
 ```bash
 hf download Frosty40/Nex-N2-mini-Turbo-Phase-Twin --local-dir nexn2 && cd nexn2
 bash build/docker-build.sh
-docker run --rm -it --device /dev/dri -v "$PWD":/models -p 8090:8080 nexn2-turbo -m /models/Nex-N2-mini-Turbo-Phase-Twin.gguf -ngl 99 --jinja
+docker run --rm -it --device /dev/dri -v "$PWD":/models -p 8090:8080 nexn2-turbo -m /models/Nex-N2-mini-Turbo-Phase-Twin.gguf -ngl 99 --jinja --cache-ram 0 --ctx-checkpoints 0
 ```
+
+> **`--cache-ram 0 --ctx-checkpoints 0` are required** — this hybrid linear-attention model goes
+> incoherent on turn 2+ if llama.cpp's prompt-cache / context-checkpoint restore is left on.
 
 Download → build the SYCL image → serve, OpenAI-compatible API on **`http://localhost:8090`**.
 For the near-lossless 2-card Q4 phase, append

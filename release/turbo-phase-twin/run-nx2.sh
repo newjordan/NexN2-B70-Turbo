@@ -61,11 +61,15 @@ source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 || true
 
 EXE="${BIN:+$BIN/}$TOOL"   # $BIN/tool if built locally, else bare tool from PATH
 
+# Multi-turn safety: this hybrid linear-attention model does not survive prompt-cache /
+# context-checkpoint restore (turn 2+ goes incoherent). Disable both so every turn is correct.
+MT_SAFE=(--cache-ram 0 --ctx-checkpoints 0)
+
 if [[ "$SM" == "on" ]]; then
   echo "[run-nx2] --sm on  -> variant 1 (Q4_K, 2-card split): $MODEL" >&2
   exec "$EXE" -m "$MODEL" -ngl "$NGL" -sm layer -ts 1,1 \
-       --override-kv general.tensor_variant.default=int:1 "${PASS[@]}"
+       --override-kv general.tensor_variant.default=int:1 "${MT_SAFE[@]}" "${PASS[@]}"
 else
-  echo "[run-nx2] --sm off -> variant 0 (IQ3_A770, 1-card fused dp4a): $MODEL" >&2
-  exec "$EXE" -m "$MODEL" -ngl "$NGL" "${PASS[@]}"
+  echo "[run-nx2] --sm off -> variant 0 (IQ3_A770, 1-card): $MODEL" >&2
+  exec "$EXE" -m "$MODEL" -ngl "$NGL" "${MT_SAFE[@]}" "${PASS[@]}"
 fi
