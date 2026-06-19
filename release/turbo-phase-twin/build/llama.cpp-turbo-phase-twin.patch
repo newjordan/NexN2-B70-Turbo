@@ -6299,12 +6299,12 @@ index b127c5cec..0b3a6b868 100644
 -    echo "Building with dynamic libs" && \
 -    cmake -B build -DGGML_NATIVE=OFF -DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DLLAMA_BUILD_TESTS=OFF ${OPT_SYCL_F16} && \
 -    cmake --build build --config Release -j$(nproc)
-+# NexN2 B70 Turbo: lean native SYCL build (server/cli/bench targets only).
-+# The two cmake lines MUST be joined with '&& \'; a bare '\' merges them into
-+# one cmake call -> "CMake Error: Unknown argument --target".
++# Nex-N2-mini Phase Twin: lean native SYCL build (server/cli/bench).
++# Configure and build are split into two RUN layers on purpose - never fold
++# them into one RUN, or cmake configure sees --target and errors out.
 +RUN cmake -B build -DGGML_SYCL=ON -DCMAKE_BUILD_TYPE=Release \
-+        -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx && \
-+    cmake --build build -j --target llama-server llama-cli llama-bench
++        -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx
++RUN cmake --build build -j --target llama-server llama-cli llama-bench
  
  RUN mkdir -p /app/lib && \
      find build -name "*.so*" -exec cp -P {} /app/lib \;

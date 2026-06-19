@@ -46,6 +46,22 @@ Q4 split — never both. **`--sm off` runs the whole model on one 16 GB Arc A770
 > tensor type. The build is **one patch on a pinned base**; see **[Install](#install)** below.
 > Everything you need is in this repo.
 
+## ⚡ Quickstart — run it in 3 commands (Docker)
+
+**Needs only Docker + an Intel Arc GPU** (A770 / B-series) — no host oneAPI; the SYCL
+compiler and Intel GPU runtime are baked into the image.
+
+```bash
+hf download Frosty40/Nex-N2-mini-Turbo-Phase-Twin --local-dir nexn2 && cd nexn2
+bash build/docker-build.sh
+docker run --rm -it --device /dev/dri -v "$PWD":/models -p 8090:8080 nexn2-turbo -m /models/Nex-N2-mini-Turbo-Phase-Twin.gguf -ngl 99 --jinja
+```
+
+Download → build the SYCL image → serve, OpenAI-compatible API on **`http://localhost:8090`**.
+For the near-lossless 2-card Q4 phase, append
+`-sm layer -ts 1,1 --override-kv general.tensor_variant.default=int:1`. No `hf` CLI?
+`pip install -U huggingface_hub`. Full options + bare-metal build in **[Install](#install)** below.
+
 ---
 
 ## What it is
