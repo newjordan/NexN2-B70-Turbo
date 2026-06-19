@@ -4,14 +4,29 @@ This model uses a **codebook-free 3-bit expert type (`IQ3_A770`)** and a **multi
 loader** that are not in upstream llama.cpp. You build llama.cpp once with this repo's single
 patch; after that the binaries load the model normally.
 
-## TL;DR
+## TL;DR — two one-command builds
+
+**Docker\* (recommended; needs only Docker + an Intel Arc GPU — no host oneAPI):**
+
+```bash
+./docker-build.sh     # builds image 'nexn2-turbo'; prints the ready docker run command
+```
+
+> \*The Docker path is new and **still under validation** (patch build-verified; the in-container
+> run is in active testing on Arc B70 + by early users). The bare-metal path below is the proven
+> fallback. This note is removed once the container build is confirmed green end-to-end.
+
+**Bare-metal (only if you already have Intel oneAPI installed):**
 
 ```bash
 ./build.sh            # from this build/ directory (or repo root: build/build.sh)
 ```
 
-That clones llama.cpp, checks out the pinned base, applies
-`llama.cpp-turbo-phase-twin.patch`, and builds the SYCL binaries.
+Both clone llama.cpp, check out the pinned base, apply
+`llama.cpp-turbo-phase-twin.patch`, and build the SYCL binaries
+(`--target llama-server llama-cli llama-bench`). The patch now also carries the
+`.devops/intel.Dockerfile` build recipe, so the Docker path has nothing to edit and no
+oneAPI to install — the compiler and GPU runtime live inside the image.
 
 ## Prerequisites
 
@@ -57,5 +72,13 @@ Expect coherent output and, in the load log, the experts loading as `IQ3_A770`. 
   model loads and runs on CPU and on non-SYCL backends, but the fused decode speedups are
   SYCL-only. For non-Intel GPUs, the standard-quant collection
   (https://huggingface.co/Frosty40/Nex-N2-mini-B70-Turbo-GGUF) is the better choice.
+- **Docker build fails right after `FROM` ("manifest unknown / not found"):** the base image
+  tag must exist. Valid `intel/deep-learning-essentials` tags include
+  `2025.3.3-0-devel-ubuntu24.04` (the pinned default) and `2026.0.0-devel-ubuntu24.04` — note
+  2026.0.0 has **no** `-0-` segment, the 2025.x line does. Don't pass
+  `--build-arg ONEAPI_VERSION=...` unless you copy an exact existing tag; the default works.
+- **`CMake Error: Unknown argument --target` during the Docker build:** something joined the
+  two `cmake` lines in the Dockerfile's build `RUN` with a bare `\` instead of `&& \`. Don't
+  hand-edit the Dockerfile — the shipped patch already has the correct recipe; re-apply it.
 - **Per-feature patches & methodology:** https://github.com/newjordan/NexN2-B70-Turbo
   (patches `0005`–`0010` for `IQ3_A770` + the loader; `0001`–`0004` for the SYCL MoE chain).

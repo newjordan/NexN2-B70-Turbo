@@ -98,8 +98,28 @@ same binary, prefill-matched (so it's the kernel, not scheduler contention):
 
 ## Install
 
-You need llama.cpp built with the **SYCL** backend (Intel oneAPI) and this repo's single
-patch. One base commit, one patch — the result is the exact validated code.
+You need llama.cpp built with the **SYCL** backend and this repo's single patch. One base
+commit, one patch — the result is the exact validated code. Two one-command paths:
+
+### Easiest: Docker\* (no host oneAPI — just Docker + an Intel Arc GPU)
+
+```bash
+cd build
+./docker-build.sh          # clones, applies the patch, builds image 'nexn2-turbo'
+```
+
+It prints a ready `docker run` (OpenAI-compatible API on `http://localhost:8090`). One card
+runs the IQ3 phase; for two cards add
+`-sm layer -ts 1,1 --override-kv general.tensor_variant.default=int:1`. The patch ships the
+`.devops/intel.Dockerfile` recipe, so there is **nothing to edit and no oneAPI to install** —
+the compiler and Intel GPU runtime live inside the image.
+
+> \***The Docker path is brand-new and still under validation.** The in-container build is being
+> tested on Arc B70 and by early users right now. It applies and compiles from the same sources
+> as the proven bare-metal build below — if you hit a container-build snag, use **Bare-metal**
+> (or please report it). This note comes off once it's confirmed green end-to-end.
+
+### Bare-metal (if you already have Intel oneAPI)
 
 ```bash
 # 0) Intel oneAPI (icpx + MKL/DPCPP) installed and on PATH:
@@ -193,8 +213,9 @@ card needs and drop the unused bytes. `budget_mb` absent/`0` → ordinary `--sm`
 | `run-nx2.sh` | `--sm` launcher (off=1-card IQ3, on=2-card Q4) |
 | `install-nx2.sh` | one-command: detect VRAM → pick budget → autoprune → fitted launcher |
 | `prune-dual.py` | autoprune the dual to a single right-sized GGUF for a VRAM budget |
-| `build/llama.cpp-turbo-phase-twin.patch` | the single build patch (applies on base `f0156d140`) |
-| `build/build.sh` | clone + checkout + apply + build, one command |
+| `build/llama.cpp-turbo-phase-twin.patch` | the single build patch — source stack **+ the SYCL Dockerfile** (applies on base `f0156d140`) |
+| `build/docker-build.sh` | **turnkey Docker build** — bundles oneAPI; needs only Docker + an Arc GPU |
+| `build/build.sh` | bare-metal one-command build (needs host oneAPI) |
 | `build/BUILD.md` | build notes & troubleshooting |
 
 ## Provenance & changes (Apache-2.0 §4(b))
