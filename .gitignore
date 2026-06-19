@@ -19,3 +19,7 @@
 # Python
 __pycache__/
 *.pyc
+
+# Phase Twin: throwaway build clone (recreated by docker-build.sh) + patch backups
+release/turbo-phase-twin/build/llama.cpp/
+*.patch.bak
