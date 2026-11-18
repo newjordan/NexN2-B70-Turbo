@@ -6,16 +6,21 @@ This tree separates retained release evidence from exploratory measurements.
 
 - `frontier.csv` - original quant frontier table.
 - `model-checksums.sha256` - retained model artifact checksums.
+- `longctx-fa.csv` / `longctx-reorder.csv` - retained long-context depth controls (FA; pre-Q6_K reorder table).
 - `nx2-controls/` - stock-vs-Turbo B70 control runs.
 - `fabler-q6k-reorder/` - Q6_K MoE reorder campaign.
 - `fabler-gate-up-fusion/` - patch `0004` NX2 fusion campaign and rejected probes.
 - `nx2-kernel-release-gate/` - release-gate comparisons used to decide whether the HF card should move.
+- `nx2-final-eval/` - shipped dual-mode final eval: 1-card IQ3 vs 2-card Q4_K (KLD/PPL/throughput).
+- `elastic-precision/` - patch `0011` elastic per-tensor IQ3→Q4_K Pareto + promote manifests.
 - `upstream-pr/` - llama.cpp PR validation artifacts for the reusable SYCL MoE reorder component.
 
 ## Supporting Evidence
 
 - `nx2-first-token/` - first-token timing checks.
 - `nx2-path-debug/` - debug traces proving NX2 MoE expert tensors reach the SYCL path.
+- `init-tensor-ab/` - same-binary A/B proving the IQ3 reorder `init_tensor` switch is live (+88% decode).
+- `iq3-mixed-down/` - IQ3 mixed-precision down sweeps that picked the shipped A770 recipe.
 - `micro-moe/` - small MoE fixture smoke tests.
 - `sycl-pr-cross-device/` - local runner sanity output for cross-device validation flow.
 
@@ -23,3 +28,5 @@ This tree separates retained release evidence from exploratory measurements.
 
 - `atlas-3090/` - CUDA/RTX 3090 sanity data. Useful as machine notes only; it does not exercise the SYCL Turbo path.
 - `tag-*` and `tag-bench-raw/` - separate memory/tagging experiments.
+- `memory-bakeoff.*`, `niah*` - mempalace memory-substrate / NIAH context experiments, separate from the kernel path.
+- `reap-pareto.csv` - dropped REAP pruning sweep (see `docs/reap-results.md`).

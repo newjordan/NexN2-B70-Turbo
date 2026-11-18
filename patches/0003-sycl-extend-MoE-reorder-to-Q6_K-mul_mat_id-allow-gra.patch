@@ -16,8 +16,6 @@ Also: check_graph_compatibility now admits MUL_MAT_ID nodes that take the fused
 no-host-sync TG path (ids stay on device; lazy reorder must already have run).
 SYCL graphs stay default-off: on B70 (L0 1.15) per-token graph update throws
 'different topology' and re-finalize collapses decode to 15.5 t/s.
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  ggml/src/ggml-sycl/ggml-sycl.cpp | 123 ++++++++++++++++++++++++++++---
  ggml/src/ggml-sycl/mmvq.cpp      |   5 ++

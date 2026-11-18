@@ -6,14 +6,15 @@ normalized values, and runs 1-D Lloyd-Max (k-means) to find 8 levels matched to 
 weight distribution. Scales the centers to int8 (max |level| -> LMAX) for a
 dp4a-friendly LUT. Prints the LUT to paste into the C type.
 """
-import sys, numpy as np
-sys.path.insert(0, "/home/frosty40/llama.cpp/gguf-py")
+import os, sys
+import numpy as np
+sys.path.insert(0, os.path.join(os.environ.get("LLAMA_CPP", os.path.expanduser("~/llama.cpp")), "gguf-py"))
 from gguf.gguf_reader import GGUFReader
 
 LMAX = 127         # full int8 range for the 8 levels (fine placement; matches kvalues_iq4nl)
 NLEV = 8           # 3-bit
 SUB  = 32          # sub-block size (matches L3)
-M = "/home/frosty40/models/nex-n2-mini/NX2-bf16.gguf"
+M = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser("~/models/nex-n2-mini/NX2-bf16.gguf")
 
 def bf16_to_f32(u8):              # raw bf16 bytes -> f32
     u16 = u8.view(np.uint16)

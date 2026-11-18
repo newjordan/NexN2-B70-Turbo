@@ -3,8 +3,6 @@ From: newjordan <newjordan@gmail.com>
 Date: Thu, 11 Jun 2026 23:56:45 -0500
 Subject: [PATCH 2/3] sycl: make concat submit-only (drop host waits on
  in-order queue)
-
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
  ggml/src/ggml-sycl/concat.cpp | 7 +++++--
  1 file changed, 5 insertions(+), 2 deletions(-)

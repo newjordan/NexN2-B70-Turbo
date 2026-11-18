@@ -20,8 +20,6 @@ Usable today via: llama-quantize --tensor-type ffn_{gate,up,down}_exps=iq3_a770
 on a q6_k base (Policy C). A dedicated LLAMA_FTYPE + llama_tensor_get_type policy
 is deferred to a follow-up. Validated by tests/iq3_a770_oracle_check.c:
 vec_dot == dequantize-then-dot (rel diff ~1e-7), round-trip NRMSE 0.142.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  ggml/include/ggml.h               |   4 +-
  ggml/src/ggml-common.h            |  12 ++

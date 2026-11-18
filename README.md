@@ -122,7 +122,7 @@ Turbo Phase Twin combined patch. See [`patches/README.md`](patches/README.md).
 ## Reproduce the frontier
 
 ```bash
-./scripts/nx2-phase1-sweep.sh   # quantize variants, measure KLD/PPL + t/s -> results/frontier.csv
+./scripts/nx2-phase1-sweep.sh   # quantize variants, measure KLD/PPL + t/s (writes ~/nx2-results.csv; retained copy: results/frontier.csv)
 ```
 
 See [`docs/methodology.md`](docs/methodology.md) for the ground-truth setup: bf16 → GGUF convert, the MTP/NextN metadata setting, the Q6_K reference, and the imatrix.
