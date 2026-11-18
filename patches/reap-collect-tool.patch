@@ -5,8 +5,6 @@ Subject: [PATCH] tools: add reap-collect (router-weighted expert saliency
  collector)
 
 cb_eval taps ffn_moe_down (expert ids) + ffn_moe_weighted (g*||f|| norm) per layer; emits per-(layer,expert) saliency GGUF for REAP scoring. Used for the REAP prune experiment (dropped; see docs/reap-results.md).
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  tools/CMakeLists.txt        |   1 +
  tools/reap/CMakeLists.txt   |   8 ++

@@ -13,7 +13,8 @@ Both rows are the **shipped GGUFs**, same llama.cpp build, same corpus/base.
 - **2-card halves KLD (−55%)** and is **within 0.24% PPL of the full Q6_K base — effectively
   lossless.** All-experts-Q4_K beats the down-only-Q4_K frontier point (0.0567): gate/up *do*
   move quality going 3→4 bit (more than the IQ3-only sweep suggested).
-- Raw: [`kld-iq3-1card.log`](kld-iq3-1card.log), [`kld-q4k-2card.log`](kld-q4k-2card.log).
+- Raw logs (`kld-iq3-1card.log`, `kld-q4k-2card.log`) were not retained in-repo — the
+  table above is the retained copy of the numbers.
 
 ## Throughput (Intel Arc Pro B70, Battlemage, A770-proxy; competing Q5 server resident)
 
